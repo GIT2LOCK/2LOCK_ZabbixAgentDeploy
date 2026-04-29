@@ -144,22 +144,23 @@ zbx_test() {
 # -----------------------------------------------------------------------------
 clear
 echo ""
-# Cores do Banner principal
+
+# Usando heredoc com aspas simples no EOF para desativar interpretação de comandos
 echo -e "${BOLD}${BLUE}"
-echo '  ___ _   ___   ___ _  __'
-echo ' |_  ) | / _ \ / __| |/ /'
-echo '  / /| |_| (_) | (__| ' < '
-echo ' /___|____\___/ \___|_|\_\'
-echo ' |_   _| __/ __| || |     '
-echo '   | | | _| (__| __ |     '
-echo '   |_| |___\___|_||_|     '
+cat << 'EOF'
+  ___ _   ___   ___ _  __
+ |_  ) | / _ \ / __| |/ /
+  / /| |_| (_) | (__| ' < 
+ /___|____\___/ \___|_|\_\
+ |_   _| __/ __| || |     
+   | | | _| (__| __ |     
+   |_| |___\___|_||_|     
+EOF
 echo -e "${NC}"
 
-# Informações do Script
 echo -e "${BOLD}${CYAN}        Zabbix Agent 2 -- Instalador Automatizado${NC}"
 echo -e "${DIM}        Zabbix 7.0 LTS | $(date '+%Y') | v3.0${NC}"
 
-# Status do Modo Automatizado
 if [[ "$AUTO_MODE" == true ]]; then
     echo -e "${YELLOW}        [MODO AUTOMATIZADO ATIVO]${NC}"
 fi
@@ -167,7 +168,6 @@ fi
 echo ""
 separator
 echo ""
-
 # -----------------------------------------------------------------------------
 # TERMO DE USO
 # -----------------------------------------------------------------------------
