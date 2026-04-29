@@ -653,18 +653,19 @@ separator
 info "Instalando Zabbix Agent 2 (versao mais recente do 7.0) e plugins..."
 
 if [[ "$DISTRO" == "rpm" ]]; then
-    $PKG_MANAGER install -y zabbix-agent2 zabbix-agent2-plugin-* &>/dev/null \
-        || die "Falha na instalacao do zabbix-agent2."
+    $PKG_MANAGER install -y zabbix-agent2 zabbix-agent2-plugin-* \
+        || die "Falha na instalacao do zabbix-agent2. Consulte o log acima e: ${LOG_FILE}"
 elif [[ "$DISTRO" == "deb" ]]; then
     DEBIAN_FRONTEND=noninteractive $PKG_MANAGER install -y \
-        zabbix-agent2 zabbix-agent2-plugin-* &>/dev/null \
-        || die "Falha na instalacao do zabbix-agent2."
+        zabbix-agent2 zabbix-agent2-plugin-* \
+        || die "Falha na instalacao do zabbix-agent2. Consulte o log acima e: ${LOG_FILE}"
 fi
 
 command -v zabbix_agent2 &>/dev/null \
     || die "Binario zabbix_agent2 nao encontrado apos instalacao."
 
-AGENT_VERSION_FULL=$(zabbix_agent2 -V 2>&1 | head -1)
+AGENT_VERSION_RAW=$(zabbix_agent2 -V 2>&1)
+AGENT_VERSION_FULL=${AGENT_VERSION_RAW%%$'\n'*}
 success "Instalado: ${AGENT_VERSION_FULL}"
 echo ""
 
