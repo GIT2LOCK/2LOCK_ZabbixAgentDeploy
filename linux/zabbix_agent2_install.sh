@@ -25,6 +25,13 @@ for arg in "$@"; do
     [[ "$arg" == "--auto" ]] && AUTO_MODE=true
 done
 
+# Tenta vincular um descritor dedicado ao terminal de controle para leituras
+# interativas mesmo quando o script for executado via pipe (curl | bash).
+TTY_FD=""
+if exec 3</dev/tty 2>/dev/null; then
+    TTY_FD=3
+fi
+
 # -----------------------------------------------------------------------------
 # CORES -- apenas caracteres ASCII puros, sem aspas inteligentes
 # -----------------------------------------------------------------------------
@@ -52,10 +59,10 @@ prompt_read() {
     local __prompt="$2"
     local __value=""
     echo -n "$__prompt"
-    if [[ -r /dev/tty ]]; then
-        read -r __value < /dev/tty || die "Falha ao ler entrada interativa no terminal."
+    if [[ -n "${TTY_FD}" ]]; then
+        read -r __value <&"${TTY_FD}" || die "Falha ao ler entrada interativa no terminal."
     else
-        read -r __value || die "Entrada interativa indisponivel (sem TTY). Use --auto para execucao nao interativa."
+        die "Entrada interativa indisponivel (sem TTY). Use --auto com ACCEPT_EULA=yes para execucao nao interativa."
     fi
     printf -v "$__var_name" '%s' "$__value"
 }
