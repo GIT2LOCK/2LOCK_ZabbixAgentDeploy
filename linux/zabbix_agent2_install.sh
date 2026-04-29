@@ -832,11 +832,32 @@ chmod 640 "$AGENT_CONF"
 success "Configuracao gerada: ${AGENT_CONF}"
 echo ""
 
+
+# Compatibilidade: alguns templates antigos usam parametros nao suportados pelo Agent2
+# Ex.: MaxLinesPerSecond (valido no agentd, invalido no agent2).
+sanitize_unsupported_params() {
+    local changed=0
+    local f
+
+    for f in "$AGENT_CONF" "$AGENT_CONF_D"/*.conf; do
+        [[ -f "$f" ]] || continue
+        if grep -Eq '^[[:space:]]*MaxLinesPerSecond=' "$f"; then
+            sed -i -E 's/^[[:space:]]*(MaxLinesPerSecond=.*)$/# 2LOCK-AUTO-COMMENT (invalido no agent2): \1/' "$f"
+            warn "Parametro invalido para zabbix_agent2 removido automaticamente: MaxLinesPerSecond em ${f}"
+            changed=1
+        fi
+    done
+
+    return $changed
+}
+
 # -----------------------------------------------------------------------------
 # VALIDACAO PREVIA DA CONFIGURACAO
 # Garante que o binario carregue o conf antes do restart do servico
 # -----------------------------------------------------------------------------
 separator
+sanitize_unsupported_params || true
+
 info "Executando validacao previa da configuracao..."
 
 if ! command -v zabbix_agent2 &>/dev/null; then

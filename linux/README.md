@@ -90,7 +90,6 @@ ListenPort=<ZABBIX_PORT>
 LogFile=/var/log/zabbix/zabbix_agent2.log
 LogFileSize=10
 DebugLevel=3
-MaxLinesPerSecond=20
 Timeout=10
 Include=/etc/zabbix/zabbix_agent2.d/*.conf
 ```
