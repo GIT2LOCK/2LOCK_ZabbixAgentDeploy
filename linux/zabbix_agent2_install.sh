@@ -711,7 +711,7 @@ UPEOF
     # Valida o comando diretamente antes de reiniciar o servico
     info "Validando comando do user parameter..."
     local test_output
-    test_output=$(ps -eo comm,%cpu,%mem --sort=-%cpu 2>/dev/null | head -n 6 | tail -n +2 |         awk 'BEGIN{printf "["}{printf "%s{"process":"%s","cpu":%s,"mem":%s}",(NR>1?",":""),$1,$2,$3}END{printf "]"}')
+    test_output=$(ps -eo comm,%cpu,%mem --sort=-%cpu 2>/dev/null | head -n 6 | tail -n +2 |         awk 'BEGIN{printf "["}{printf "%s{\"process\":\"%s\",\"cpu\":%s,\"mem\":%s}",(NR>1?",":""),$1,$2,$3}END{printf "]"}',(NR>1?",":""),$1,$2,$3}END{printf "]"}')
 
     if echo "$test_output" | grep -q '"process"'; then
         success "Saida do comando validada:"
