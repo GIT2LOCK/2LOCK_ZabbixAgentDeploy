@@ -144,18 +144,26 @@ zbx_test() {
 # -----------------------------------------------------------------------------
 clear
 echo ""
+# Cores do Banner principal
 echo -e "${BOLD}${BLUE}"
-echo '  ######  ##      ######   ######  ##  ##'
-echo '     ##   ##     ##    ## ##       ## ##'
-echo '   ##     ##     ##    ## ##       #####'
-echo '  ##      ##     ##    ## ##       ## ##'
-echo '  ######  ######  ######   ######  ##  ##'
+echo '  ___ _   ___   ___ _  __'
+echo ' |_  ) | / _ \ / __| |/ /'
+echo '  / /| |_| (_) | (__| ' < '
+echo ' /___|____\___/ \___|_|\_\'
+echo ' |_   _| __/ __| || |     '
+echo '   | | | _| (__| __ |     '
+echo '   |_| |___\___|_||_|     '
 echo -e "${NC}"
+
+# Informações do Script
 echo -e "${BOLD}${CYAN}        Zabbix Agent 2 -- Instalador Automatizado${NC}"
 echo -e "${DIM}        Zabbix 7.0 LTS | $(date '+%Y') | v3.0${NC}"
+
+# Status do Modo Automatizado
 if [[ "$AUTO_MODE" == true ]]; then
     echo -e "${YELLOW}        [MODO AUTOMATIZADO ATIVO]${NC}"
 fi
+
 echo ""
 separator
 echo ""
@@ -166,8 +174,7 @@ echo ""
 echo -e "${BOLD}  TERMO DE USO -- LEIA ANTES DE CONTINUAR${NC}"
 echo ""
 echo -e "${DIM}  Este instalador e de uso exclusivo da 2LOCK e foi desenvolvido"
-echo    "  para automatizar a implantacao do Zabbix Agent 2 em servidores"
-echo -e "  sob gestao da 2LOCK.${NC}"
+echo    "  para automatizar a implantacao do Zabbix Agent 2"
 echo ""
 echo    "  >> Este script realizara alteracoes no sistema operacional,"
 echo    "     incluindo instalacao de pacotes, arquivos de configuracao"
