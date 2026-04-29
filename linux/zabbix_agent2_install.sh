@@ -51,6 +51,13 @@ error()   { echo -e "${RED}[ERRO]${NC}  $*" >&2; }
 die()     { error "$*"; exit 1; }
 separator() { echo -e "${DIM}------------------------------------------------------${NC}"; }
 
+# Sanitiza entrada de usuario/variaveis:
+# - remove carriage return (\r)
+# - remove espacos no inicio/fim
+sanitize_input() {
+    echo -n "$1" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
 # Leitura interativa robusta:
 # - Prioriza /dev/tty para funcionar mesmo quando stdin estiver redirecionado
 # - Retorna erro explicito se nao houver TTY disponivel
@@ -64,6 +71,7 @@ prompt_read() {
     else
         die "Entrada interativa indisponivel (sem TTY). Use --auto com ACCEPT_EULA=yes para execucao nao interativa."
     fi
+    __value="$(sanitize_input "$__value")"
     printf -v "$__var_name" '%s' "$__value"
 }
 
@@ -299,7 +307,7 @@ echo ""
 CURRENT_HOSTNAME=$(hostname -s)
 
 if [[ "$AUTO_MODE" == true ]]; then
-    ZABBIX_HOSTNAME="${ZABBIX_HOSTNAME:-$CURRENT_HOSTNAME}"
+    ZABBIX_HOSTNAME="$(sanitize_input "${ZABBIX_HOSTNAME:-$CURRENT_HOSTNAME}")"
     info "Hostname (automatico): ${ZABBIX_HOSTNAME}"
 else
     echo -e "  Hostname detectado: ${YELLOW}${CURRENT_HOSTNAME}${NC}"
@@ -307,7 +315,11 @@ else
     ZABBIX_HOSTNAME="${INPUT_HOSTNAME:-$CURRENT_HOSTNAME}"
 fi
 
-if [[ ! "$ZABBIX_HOSTNAME" =~ ^[a-zA-Z0-9_\-\.]+$ ]]; then
+if [[ -z "$ZABBIX_HOSTNAME" ]]; then
+    die "Hostname invalido: valor vazio apos limpeza. Informe ao menos 1 caractere."
+fi
+
+if [[ ! "$ZABBIX_HOSTNAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
     die "Hostname invalido: '${ZABBIX_HOSTNAME}'. Use apenas letras, numeros, hifen, underscore ou ponto."
 fi
 echo ""
@@ -316,7 +328,7 @@ echo ""
 if [[ "$AUTO_MODE" == true ]]; then
     [[ -z "${ZABBIX_SERVER:-}" ]] && \
         die "Modo --auto requer ZABBIX_SERVER=<IP>."
-    ZABBIX_SERVER_IP="$ZABBIX_SERVER"
+    ZABBIX_SERVER_IP="$(sanitize_input "${ZABBIX_SERVER}")"
     if ! validate_ipv4 "$ZABBIX_SERVER_IP"; then
         die "ZABBIX_SERVER invalido: '${ZABBIX_SERVER_IP}'. Informe um IPv4 valido."
     fi
@@ -335,7 +347,7 @@ echo ""
 
 # --- Porta ---
 if [[ "$AUTO_MODE" == true ]]; then
-    ZABBIX_AGENT_PORT="${ZABBIX_PORT:-10050}"
+    ZABBIX_AGENT_PORT="$(sanitize_input "${ZABBIX_PORT:-10050}")"
     info "Porta do agente (automatico): ${ZABBIX_AGENT_PORT}"
 else
     echo -e "  ${DIM}Porta padrao do Zabbix: 10050${NC}"
@@ -434,7 +446,7 @@ check_and_apply_firewall() {
 
         local apply_fw="n"
         if [[ "$AUTO_MODE" == true ]]; then
-            apply_fw="${APPLY_FIREWALL:-n}"
+            apply_fw="$(sanitize_input "${APPLY_FIREWALL:-n}")"
         else
             prompt_read apply_fw "  Deseja liberar agora (somente para ${ZABBIX_SERVER_IP})? [s/N]: "
         fi
@@ -485,7 +497,7 @@ check_and_apply_firewall() {
 
         local apply_fw="n"
         if [[ "$AUTO_MODE" == true ]]; then
-            apply_fw="${APPLY_FIREWALL:-n}"
+            apply_fw="$(sanitize_input "${APPLY_FIREWALL:-n}")"
         else
             prompt_read apply_fw "  Deseja liberar agora (somente para ${ZABBIX_SERVER_IP})? [s/N]: "
         fi
