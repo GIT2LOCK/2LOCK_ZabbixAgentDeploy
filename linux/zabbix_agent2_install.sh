@@ -802,7 +802,6 @@ LogFileSize=10
 DebugLevel=3
 
 # --- Performance ---
-MaxLinesPerSecond=20
 Timeout=10
 
 # --- Includes ---
@@ -834,6 +833,28 @@ success "Configuracao gerada: ${AGENT_CONF}"
 echo ""
 
 # -----------------------------------------------------------------------------
+# VALIDACAO PREVIA DA CONFIGURACAO
+# Garante que o binario carregue o conf antes do restart do servico
+# -----------------------------------------------------------------------------
+separator
+info "Executando validacao previa da configuracao..."
+
+if ! command -v zabbix_agent2 &>/dev/null; then
+    die "Binario zabbix_agent2 nao encontrado apos a instalacao."
+fi
+
+if ! zabbix_agent2 -c "$AGENT_CONF" -t agent.ping >/dev/null 2>&1; then
+    error "Validacao previa falhou: zabbix_agent2 nao conseguiu carregar a configuracao."
+    warn  "Saida detalhada do teste local:"
+    zabbix_agent2 -c "$AGENT_CONF" -t agent.ping || true
+    warn  "Revise tambem o conteudo de: ${AGENT_CONF} e ${AGENT_CONF_D}/*.conf"
+    exit 1
+fi
+
+success "Validacao previa concluida: configuracao carregada com sucesso."
+echo ""
+
+# -----------------------------------------------------------------------------
 # HABILITAR E INICIAR O SERVICO
 # -----------------------------------------------------------------------------
 separator
@@ -841,13 +862,28 @@ info "Habilitando e iniciando servico zabbix-agent2..."
 
 systemctl daemon-reload
 systemctl enable zabbix-agent2 &>/dev/null
-systemctl restart zabbix-agent2
+
+if ! systemctl restart zabbix-agent2; then
+    error "Falha ao iniciar o servico zabbix-agent2 apos gerar a configuracao."
+    warn  "Status resumido do servico:"
+    systemctl status --no-pager -l zabbix-agent2 || true
+    warn  "Ultimas linhas do journal (zabbix-agent2):"
+    journalctl -u zabbix-agent2 -n 50 --no-pager || true
+    exit 1
+fi
 sleep 3
 
 # Reinicia novamente se grupo Docker foi adicionado (necessario para herdar grupo)
 if [[ "$DOCKER_GROUP_ADDED" == true ]]; then
     info "Reiniciando para aplicar permissao de grupo Docker..."
-    systemctl restart zabbix-agent2
+    if ! systemctl restart zabbix-agent2; then
+        error "Falha ao reiniciar o servico apos ajuste de grupo Docker."
+        warn  "Status resumido do servico:"
+        systemctl status --no-pager -l zabbix-agent2 || true
+        warn  "Ultimas linhas do journal (zabbix-agent2):"
+        journalctl -u zabbix-agent2 -n 50 --no-pager || true
+        exit 1
+    fi
     sleep 2
 fi
 
