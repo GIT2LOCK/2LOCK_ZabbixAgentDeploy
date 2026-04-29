@@ -25,6 +25,13 @@ for arg in "$@"; do
     [[ "$arg" == "--auto" ]] && AUTO_MODE=true
 done
 
+# Tenta vincular um descritor dedicado ao terminal de controle para leituras
+# interativas mesmo quando o script for executado via pipe (curl | bash).
+TTY_FD=""
+if exec 3</dev/tty 2>/dev/null; then
+    TTY_FD=3
+fi
+
 # -----------------------------------------------------------------------------
 # CORES -- apenas caracteres ASCII puros, sem aspas inteligentes
 # -----------------------------------------------------------------------------
@@ -43,6 +50,22 @@ warn()    { echo -e "${YELLOW}[AVISO]${NC} $*"; }
 error()   { echo -e "${RED}[ERRO]${NC}  $*" >&2; }
 die()     { error "$*"; exit 1; }
 separator() { echo -e "${DIM}------------------------------------------------------${NC}"; }
+
+# Leitura interativa robusta:
+# - Prioriza /dev/tty para funcionar mesmo quando stdin estiver redirecionado
+# - Retorna erro explicito se nao houver TTY disponivel
+prompt_read() {
+    local __var_name="$1"
+    local __prompt="$2"
+    local __value=""
+    echo -n "$__prompt"
+    if [[ -n "${TTY_FD}" ]]; then
+        read -r __value <&"${TTY_FD}" || die "Falha ao ler entrada interativa no terminal."
+    else
+        die "Entrada interativa indisponivel (sem TTY). Use --auto com ACCEPT_EULA=yes para execucao nao interativa."
+    fi
+    printf -v "$__var_name" '%s' "$__value"
+}
 
 # -----------------------------------------------------------------------------
 # VERIFICACAO DE ROOT
@@ -169,8 +192,7 @@ if [[ "$AUTO_MODE" == true ]]; then
     fi
     success "Termo aceito via ACCEPT_EULA=yes."
 else
-    echo -n "  Li e aceito os termos acima [s/N]: "
-    read -r ACCEPT_TERMS
+    prompt_read ACCEPT_TERMS "  Li e aceito os termos acima [s/N]: "
     echo ""
     if [[ ! "$ACCEPT_TERMS" =~ ^[sS]$ ]]; then
         info "Instalacao cancelada. Termo de uso nao aceito."
@@ -251,8 +273,7 @@ if [[ "$NTP_OK" == false ]]; then
     if [[ "$AUTO_MODE" == true ]]; then
         warn "Modo --auto: continuando mesmo sem NTP."
     else
-        echo -n "  Deseja continuar mesmo assim? [s/N]: "
-        read -r CONTINUE_NTP
+        prompt_read CONTINUE_NTP "  Deseja continuar mesmo assim? [s/N]: "
         [[ ! "$CONTINUE_NTP" =~ ^[sS]$ ]] && { info "Instalacao cancelada."; exit 0; }
     fi
 fi
@@ -273,8 +294,7 @@ if [[ "$AUTO_MODE" == true ]]; then
     info "Hostname (automatico): ${ZABBIX_HOSTNAME}"
 else
     echo -e "  Hostname detectado: ${YELLOW}${CURRENT_HOSTNAME}${NC}"
-    echo -n "  Pressione Enter para confirmar ou digite outro: "
-    read -r INPUT_HOSTNAME
+    prompt_read INPUT_HOSTNAME "  Pressione Enter para confirmar ou digite outro: "
     ZABBIX_HOSTNAME="${INPUT_HOSTNAME:-$CURRENT_HOSTNAME}"
 fi
 
@@ -294,8 +314,7 @@ if [[ "$AUTO_MODE" == true ]]; then
     info "Zabbix Server IP (automatico): ${ZABBIX_SERVER_IP}"
 else
     while true; do
-        echo -n "  IP do Zabbix Server: "
-        read -r ZABBIX_SERVER_IP
+        prompt_read ZABBIX_SERVER_IP "  IP do Zabbix Server: "
         if validate_ipv4 "$ZABBIX_SERVER_IP"; then
             break
         else
@@ -312,8 +331,7 @@ if [[ "$AUTO_MODE" == true ]]; then
 else
     echo -e "  ${DIM}Porta padrao do Zabbix: 10050${NC}"
     while true; do
-        echo -n "  Porta do agente [Enter = 10050]: "
-        read -r INPUT_PORT
+        prompt_read INPUT_PORT "  Porta do agente [Enter = 10050]: "
         ZABBIX_AGENT_PORT="${INPUT_PORT:-10050}"
         if [[ "$ZABBIX_AGENT_PORT" =~ ^[0-9]+$ ]] && \
            [[ "$ZABBIX_AGENT_PORT" -ge 1024 ]] && \
@@ -342,8 +360,7 @@ else
     if [[ "$AUTO_MODE" == true ]]; then
         warn "Modo --auto: continuando mesmo sem acesso ao repositorio."
     else
-        echo -n "  Deseja continuar mesmo assim? [s/N]: "
-        read -r CONTINUE_REPO
+        prompt_read CONTINUE_REPO "  Deseja continuar mesmo assim? [s/N]: "
         [[ ! "$CONTINUE_REPO" =~ ^[sS]$ ]] && { info "Instalacao cancelada."; exit 0; }
     fi
 fi
@@ -410,8 +427,7 @@ check_and_apply_firewall() {
         if [[ "$AUTO_MODE" == true ]]; then
             apply_fw="${APPLY_FIREWALL:-n}"
         else
-            echo -n "  Deseja liberar agora (somente para ${ZABBIX_SERVER_IP})? [s/N]: "
-            read -r apply_fw
+            prompt_read apply_fw "  Deseja liberar agora (somente para ${ZABBIX_SERVER_IP})? [s/N]: "
         fi
         echo ""
 
@@ -462,8 +478,7 @@ check_and_apply_firewall() {
         if [[ "$AUTO_MODE" == true ]]; then
             apply_fw="${APPLY_FIREWALL:-n}"
         else
-            echo -n "  Deseja liberar agora (somente para ${ZABBIX_SERVER_IP})? [s/N]: "
-            read -r apply_fw
+            prompt_read apply_fw "  Deseja liberar agora (somente para ${ZABBIX_SERVER_IP})? [s/N]: "
         fi
         echo ""
 
@@ -508,8 +523,7 @@ echo ""
 if [[ "$AUTO_MODE" == true ]]; then
     info "Modo --auto: iniciando sem confirmacao manual."
 else
-    echo -n "  Confirmar e iniciar instalacao? [s/N]: "
-    read -r CONFIRM
+    prompt_read CONFIRM "  Confirmar e iniciar instalacao? [s/N]: "
     echo ""
     [[ ! "$CONFIRM" =~ ^[sS]$ ]] && { info "Instalacao cancelada."; exit 0; }
 fi
