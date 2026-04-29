@@ -802,7 +802,6 @@ LogFileSize=10
 DebugLevel=3
 
 # --- Performance ---
-MaxLinesPerSecond=20
 Timeout=10
 
 # --- Includes ---
