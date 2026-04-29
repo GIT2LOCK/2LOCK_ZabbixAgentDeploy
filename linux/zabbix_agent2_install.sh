@@ -977,20 +977,6 @@ else
 fi
 echo ""
 
-# -----------------------------------------------------------------------------
-# PROXIMOS PASSOS
-# -----------------------------------------------------------------------------
-separator
-echo -e "${BOLD}  Proximos passos no Zabbix:${NC}"
-echo ""
-echo -e "  ${CYAN}1.${NC} Configuration > Hosts > Create Host"
-echo -e "  ${CYAN}2.${NC} Host name  : ${GREEN}${ZABBIX_HOSTNAME}${NC}"
-echo -e "  ${CYAN}3.${NC} Interface  : Agent | IP do servidor | Porta ${GREEN}${ZABBIX_AGENT_PORT}${NC}"
-echo -e "  ${CYAN}4.${NC} Adicionar item de top CPU:"
-echo -e "             Chave : ${GREEN}linux.top.cpu${NC}"
-echo -e "             Tipo  : ${GREEN}Zabbix agent${NC} | Valor: ${GREEN}Text${NC} | Intervalo: ${GREEN}5m${NC}"
-echo ""
-
 if [[ "$FIREWALL_APPLIED" == false ]]; then
     separator
     warn "Porta ${ZABBIX_AGENT_PORT}/TCP ainda precisa ser liberada no firewall!"
