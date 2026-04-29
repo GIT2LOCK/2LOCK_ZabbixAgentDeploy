@@ -144,25 +144,27 @@ zbx_test() {
 # -----------------------------------------------------------------------------
 clear
 echo ""
-
-# Usando heredoc com aspas simples no EOF para desativar interpretação de comandos
 echo -e "${BOLD}${BLUE}"
 cat << 'EOF'
-  ___ _   ___   ___ _  __
- |_  ) | / _ \ / __| |/ /
-  / /| |_| (_) | (__| ' < 
- /___|____\___/ \___|_|\_\
- |_   _| __/ __| || |     
-   | | | _| (__| __ |     
-   |_| |___\___|_||_|     
+  ╔════════════════════════════════════════════════════════╗
+  ║                                                     TM ║
+  ║   ██████╗ ██╗      ██████╗  ██████╗██╗  ██╗            ║
+  ║  ╚════██╗██║     ██╔═══██╗██╔════╝██║ ██╔╝             ║
+  ║   █████╔╝██║     ██║   ██║██║     █████╔╝              ║
+  ║  ██╔═══╝ ██║     ██║   ██║██║     ██╔═██╗              ║
+  ║  ███████╗███████╗╚██████╔╝╚██████╗██║  ██╗             ║
+  ║  ╚══════╝╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝             ║
+  ║                                                        ║
+  ╚════════════════════════════════════════════════════════╝
 EOF
 echo -e "${NC}"
 
-echo -e "${BOLD}${CYAN}        Zabbix Agent 2 -- Instalador Automatizado${NC}"
-echo -e "${DIM}        Zabbix 7.0 LTS | $(date '+%Y') | v3.0${NC}"
+# Informações de rodapé
+echo -e "${BOLD}${CYAN}            Zabbix Agent 2 - Instalador Automatizado${NC}"
+echo -e "${DIM}            Sempre Conectados! | Zabbix 7.0 LTS | $(date '+%Y')${NC}"
 
 if [[ "$AUTO_MODE" == true ]]; then
-    echo -e "${YELLOW}        [MODO AUTOMATIZADO ATIVO]${NC}"
+    echo -e "${YELLOW}            [ STATUS: MODO AUTOMATIZADO ATIVO ]${NC}"
 fi
 
 echo ""
