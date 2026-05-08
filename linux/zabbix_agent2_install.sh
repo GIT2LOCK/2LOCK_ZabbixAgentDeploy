@@ -75,6 +75,163 @@ prompt_read() {
     printf -v "$__var_name" '%s' "$__value"
 }
 
+
+# -----------------------------------------------------------------------------
+# PLUGINS OPCIONAIS DO ZABBIX AGENT 2
+# Docker nao entra nesta lista: e tratado separadamente via permissao de grupo.
+# -----------------------------------------------------------------------------
+PLUGIN_KEYS=(mysql postgresql mongodb redis memcached mssql)
+SELECTED_PLUGINS=()
+SELECTED_PLUGIN_PACKAGES=()
+
+plugin_label() {
+    case "$1" in
+        mysql)      echo "MySQL" ;;
+        postgresql) echo "PostgreSQL" ;;
+        mongodb)    echo "MongoDB" ;;
+        redis)      echo "Redis" ;;
+        memcached)  echo "Memcached" ;;
+        mssql)      echo "MSSQL" ;;
+        *)          return 1 ;;
+    esac
+}
+
+plugin_package() {
+    case "$1" in
+        mysql|postgresql|mongodb|redis|memcached|mssql)
+            echo "zabbix-agent2-plugin-$1"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+plugin_key_from_token() {
+    local token="$1"
+    token="$(echo "$token" | tr '[:upper:]' '[:lower:]')"
+    token="${token#zabbix-agent2-plugin-}"
+
+    case "$token" in
+        1|mysql)                  echo "mysql" ;;
+        2|postgresql|postgres)    echo "postgresql" ;;
+        3|mongodb|mongo)          echo "mongodb" ;;
+        4|redis)                  echo "redis" ;;
+        5|memcached)              echo "memcached" ;;
+        6|mssql|sqlserver)        echo "mssql" ;;
+        *)                        return 1 ;;
+    esac
+}
+
+plugin_already_selected() {
+    local key="$1"
+    local selected
+    for selected in "${SELECTED_PLUGINS[@]}"; do
+        [[ "$selected" == "$key" ]] && return 0
+    done
+    return 1
+}
+
+select_all_plugins() {
+    SELECTED_PLUGINS=()
+    SELECTED_PLUGIN_PACKAGES=()
+    local key package
+    for key in "${PLUGIN_KEYS[@]}"; do
+        package="$(plugin_package "$key")"
+        SELECTED_PLUGINS+=("$key")
+        SELECTED_PLUGIN_PACKAGES+=("$package")
+    done
+}
+
+clear_plugin_selection() {
+    SELECTED_PLUGINS=()
+    SELECTED_PLUGIN_PACKAGES=()
+}
+
+plugin_selection_labels() {
+    local output=""
+    local key label
+
+    for key in "${SELECTED_PLUGINS[@]}"; do
+        label="$(plugin_label "$key")"
+        if [[ -z "$output" ]]; then
+            output="$label"
+        else
+            output="${output}, ${label}"
+        fi
+    done
+
+    if [[ -z "$output" ]]; then
+        echo "Nenhum (apenas zabbix-agent2)"
+    else
+        echo "$output"
+    fi
+}
+
+resolve_plugin_selection() {
+    local raw_selection="$1"
+    local source_label="$2"
+    local normalized token key package
+
+    raw_selection="$(sanitize_input "$raw_selection")"
+    clear_plugin_selection
+
+    if [[ -z "$raw_selection" ]]; then
+        return 0
+    fi
+
+    normalized="$(echo "$raw_selection" | tr ',;' '  ')"
+
+    for token in $normalized; do
+        token="$(sanitize_input "$token")"
+        [[ -z "$token" ]] && continue
+        token="$(echo "$token" | tr '[:upper:]' '[:lower:]')"
+
+        case "$token" in
+            0|none|nenhum|nenhuma|base)
+                clear_plugin_selection
+                return 0
+                ;;
+            7|all|todos|todas|'*')
+                select_all_plugins
+                return 0
+                ;;
+        esac
+
+        if ! key="$(plugin_key_from_token "$token")"; then
+            die "${source_label}: plugin/opcao invalida: '${token}'. Use numeros 1-7, 0, ou nomes como mysql,postgresql,redis. Docker nao e plugin instalavel."
+        fi
+
+        if ! plugin_already_selected "$key"; then
+            package="$(plugin_package "$key")"
+            SELECTED_PLUGINS+=("$key")
+            SELECTED_PLUGIN_PACKAGES+=("$package")
+        fi
+    done
+}
+
+prompt_plugin_selection() {
+    local input_plugins=""
+
+    echo -e "  ${BOLD}Plugins opcionais do Zabbix Agent 2${NC}"
+    echo -e "  ${DIM}Docker nao aparece aqui: e tratado separadamente por permissao no socket.${NC}"
+    echo ""
+    echo "  Selecione os plugins a instalar (Enter = nenhum plugin adicional):"
+    echo ""
+    echo "  [1] MySQL"
+    echo "  [2] PostgreSQL"
+    echo "  [3] MongoDB"
+    echo "  [4] Redis"
+    echo "  [5] Memcached"
+    echo "  [6] MSSQL"
+    echo "  [7] Todos"
+    echo "  [0] Nenhum (apenas zabbix-agent2)"
+    echo ""
+    prompt_read input_plugins "  Opcoes (ex: 1 3 ou 0 para nenhum): "
+    resolve_plugin_selection "$input_plugins" "Selecao de plugins"
+    success "Plugins selecionados: $(plugin_selection_labels)."
+}
+
 # -----------------------------------------------------------------------------
 # VERIFICACAO DE ROOT
 # -----------------------------------------------------------------------------
@@ -365,6 +522,15 @@ else
 fi
 echo ""
 
+# --- Plugins opcionais ---
+if [[ "$AUTO_MODE" == true ]]; then
+    resolve_plugin_selection "${ZABBIX_PLUGINS:-}" "ZABBIX_PLUGINS"
+    info "Plugins selecionados (automatico): $(plugin_selection_labels)."
+else
+    prompt_plugin_selection
+fi
+echo ""
+
 # -----------------------------------------------------------------------------
 # VERIFICACAO DE CONECTIVIDADE
 # -----------------------------------------------------------------------------
@@ -529,7 +695,8 @@ echo -e "  Hostname no Zabbix : ${GREEN}${ZABBIX_HOSTNAME}${NC}"
 echo -e "  Zabbix Server IP   : ${GREEN}${ZABBIX_SERVER_IP}${NC}"
 echo -e "  Porta do agente    : ${GREEN}${ZABBIX_AGENT_PORT}/TCP${NC}"
 echo -e "  Distribuicao       : ${GREEN}${DISTRO_PRETTY}${NC}"
-echo -e "  Pacote             : ${GREEN}zabbix-agent2 latest 7.0 + plugins${NC}"
+echo -e "  Pacote             : ${GREEN}zabbix-agent2 latest 7.0${NC}"
+echo -e "  Plugins            : ${GREEN}$(plugin_selection_labels)${NC}"
 echo -e "  PSK / Criptografia : ${YELLOW}Desabilitado${NC}"
 if [[ "$FIREWALL_APPLIED" == true ]]; then
     echo -e "  Firewall           : ${GREEN}${ZABBIX_AGENT_PORT}/TCP liberado (somente ${ZABBIX_SERVER_IP})${NC}"
@@ -562,6 +729,9 @@ remove_old_agents_rpm() {
     local agents_found=()
     rpm -q zabbix-agent2 &>/dev/null && agents_found+=("zabbix-agent2")
     rpm -q zabbix-agent  &>/dev/null && agents_found+=("zabbix-agent")
+    while IFS= read -r plugin_pkg; do
+        [[ -n "$plugin_pkg" ]] && agents_found+=("$plugin_pkg")
+    done < <(rpm -qa 'zabbix-agent2-plugin-*' 2>/dev/null || true)
     if [[ ${#agents_found[@]} -gt 0 ]]; then
         warn "Encontrado(s): ${agents_found[*]} -- removendo..."
         for svc in zabbix-agent2 zabbix-agent; do
@@ -580,6 +750,9 @@ remove_old_agents_deb() {
     local agents_found=()
     dpkg -l zabbix-agent2 2>/dev/null | grep -q "^ii" && agents_found+=("zabbix-agent2")
     dpkg -l zabbix-agent  2>/dev/null | grep -q "^ii" && agents_found+=("zabbix-agent")
+    while IFS= read -r plugin_pkg; do
+        [[ -n "$plugin_pkg" ]] && agents_found+=("$plugin_pkg")
+    done < <(dpkg-query -W -f='${binary:Package}\n' 'zabbix-agent2-plugin-*' 2>/dev/null || true)
     if [[ ${#agents_found[@]} -gt 0 ]]; then
         warn "Encontrado(s): ${agents_found[*]} -- removendo..."
         for svc in zabbix-agent2 zabbix-agent; do
@@ -647,18 +820,23 @@ install_repo_deb() {
 echo ""
 
 # -----------------------------------------------------------------------------
-# INSTALACAO DO ZABBIX AGENT 2 + PLUGINS
+# INSTALACAO DO ZABBIX AGENT 2 + PLUGINS SELECIONADOS
 # -----------------------------------------------------------------------------
 separator
-info "Instalando Zabbix Agent 2 (versao mais recente do 7.0) e plugins..."
+INSTALL_PACKAGES=(zabbix-agent2)
+if [[ ${#SELECTED_PLUGIN_PACKAGES[@]} -gt 0 ]]; then
+    INSTALL_PACKAGES+=("${SELECTED_PLUGIN_PACKAGES[@]}")
+fi
+
+info "Instalando pacotes: ${INSTALL_PACKAGES[*]}"
 
 if [[ "$DISTRO" == "rpm" ]]; then
-    $PKG_MANAGER install -y zabbix-agent2 zabbix-agent2-plugin-* \
-        || die "Falha na instalacao do zabbix-agent2. Consulte o log acima e: ${LOG_FILE}"
+    $PKG_MANAGER install -y "${INSTALL_PACKAGES[@]}" \
+        || die "Falha na instalacao do zabbix-agent2/plugins selecionados. Consulte o log acima e: ${LOG_FILE}"
 elif [[ "$DISTRO" == "deb" ]]; then
     DEBIAN_FRONTEND=noninteractive $PKG_MANAGER install -y \
-        zabbix-agent2 zabbix-agent2-plugin-* \
-        || die "Falha na instalacao do zabbix-agent2. Consulte o log acima e: ${LOG_FILE}"
+        "${INSTALL_PACKAGES[@]}" \
+        || die "Falha na instalacao do zabbix-agent2/plugins selecionados. Consulte o log acima e: ${LOG_FILE}"
 fi
 
 command -v zabbix_agent2 &>/dev/null \
@@ -999,6 +1177,7 @@ echo -e "  ${DIM}Host     : ${ZABBIX_HOSTNAME}${NC}"
 echo -e "  ${DIM}Server   : ${ZABBIX_SERVER_IP}${NC}"
 echo -e "  ${DIM}Porta    : ${ZABBIX_AGENT_PORT}${NC}"
 echo -e "  ${DIM}Versao   : ${AGENT_VERSION_FULL}${NC}"
+echo -e "  ${DIM}Plugins  : $(plugin_selection_labels)${NC}"
 if [[ "$DOCKER_GROUP_ADDED" == true ]]; then
     echo -e "  ${DIM}Docker   : usuario zabbix adicionado ao grupo docker${NC}"
 else
