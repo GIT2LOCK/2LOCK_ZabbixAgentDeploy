@@ -95,7 +95,7 @@ iwr https://2lock.com.br/windowsagent | iex
 - Verifica sincronismo NTP antes de instalar
 - Remove versões anteriores do agente
 - Configura o repositório oficial Zabbix 7.0
-- Instala o Zabbix Agent 2 e todos os plugins disponíveis
+- Instala o Zabbix Agent 2 base e permite selecionar plugins opcionais (interativo ou `ZABBIX_PLUGINS` no modo `--auto`)
 - Adiciona o usuário `zabbix` ao grupo `docker` (se Docker estiver instalado)
 - Configura user parameter customizado: `linux.top.cpu`
 - Aplica regra de firewall restrita ao IP do Zabbix Server

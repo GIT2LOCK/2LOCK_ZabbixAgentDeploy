@@ -52,6 +52,7 @@ sudo ACCEPT_EULA=yes \
      ZABBIX_SERVER=10.0.0.1 \
      ZABBIX_PORT=10050 \
      ZABBIX_HOSTNAME=MEUSERVIDOR \
+     ZABBIX_PLUGINS="mysql redis" \
      APPLY_FIREWALL=yes \
      bash <(curl -fsSL https://2lock.com.br/linuxagent) --auto
 
@@ -60,6 +61,7 @@ sudo ACCEPT_EULA=yes \
      ZABBIX_SERVER=10.0.0.1 \
      ZABBIX_PORT=10050 \
      ZABBIX_HOSTNAME=MEUSERVIDOR \
+     ZABBIX_PLUGINS="mysql redis" \
      APPLY_FIREWALL=yes \
      ./zabbix_agent2_install.sh --auto
 ```
@@ -72,6 +74,7 @@ sudo ACCEPT_EULA=yes \
 | `ZABBIX_SERVER` | Sim (--auto) | — | IP do Zabbix Server ou Proxy |
 | `ZABBIX_PORT` | Não | `10050` | Porta de escuta do agente |
 | `ZABBIX_HOSTNAME` | Não | hostname do SO | Nome do host no Zabbix — deve ser idêntico ao cadastrado |
+| `ZABBIX_PLUGINS` | Não | vazio | Plugins opcionais do Agent 2 para instalar no modo `--auto`; vazio instala apenas o pacote base |
 | `APPLY_FIREWALL` | Não | `n` | `yes` para aplicar a regra de firewall automaticamente |
 
 ---
@@ -140,15 +143,48 @@ systemctl restart zabbix-agent2
 
 ## Plugins adicionais
 
-Após a instalação, ative plugins criando o arquivo de configuração em `/etc/zabbix/zabbix_agent2.d/` e reiniciando o agente:
+Durante a execução interativa, o script pergunta quais plugins opcionais do Zabbix Agent 2 devem ser instalados:
+
+```text
+[1] MySQL
+[2] PostgreSQL
+[3] MongoDB
+[4] Redis
+[5] Memcached
+[6] MSSQL
+[7] Todos
+[0] Nenhum (apenas zabbix-agent2)
+```
+
+No modo automatizado (`--auto`), use `ZABBIX_PLUGINS` com nomes ou números separados por espaço, vírgula ou ponto e vírgula:
+
+```bash
+ZABBIX_PLUGINS="mysql postgresql redis"
+ZABBIX_PLUGINS="1,4,5"
+ZABBIX_PLUGINS="all"      # instala todos os plugins opcionais listados
+ZABBIX_PLUGINS="none"     # instala apenas zabbix-agent2
+```
+
+Se `ZABBIX_PLUGINS` não for definida no modo `--auto`, o instalador instala somente o `zabbix-agent2` base.
+
+Os pacotes seguem o padrão `zabbix-agent2-plugin-<nome>`, por exemplo:
+
+| Plugin | Pacote |
+|--------|--------|
+| MySQL | `zabbix-agent2-plugin-mysql` |
+| PostgreSQL | `zabbix-agent2-plugin-postgresql` |
+| MongoDB | `zabbix-agent2-plugin-mongodb` |
+| Redis | `zabbix-agent2-plugin-redis` |
+| Memcached | `zabbix-agent2-plugin-memcached` |
+| MSSQL | `zabbix-agent2-plugin-mssql` |
+
+> **Importante:** Docker não é instalado como plugin via pacote. O script mantém o tratamento separado: quando detecta o grupo `docker` ou `dockerroot`, adiciona o usuário `zabbix` ao grupo para permitir acesso ao socket `/var/run/docker.sock`.
+
+Após instalar ou alterar configurações de plugins em `/etc/zabbix/zabbix_agent2.d/`, reinicie o agente:
 
 ```bash
 systemctl restart zabbix-agent2
 ```
-
-| Plugin | Arquivo | Documentação |
-|--------|---------|-------------|
-| MySQL | `mysql.conf` | [plugins/mysql.md](plugins/mysql.md) |
 
 ---
 
