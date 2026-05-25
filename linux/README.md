@@ -52,7 +52,7 @@ sudo ACCEPT_EULA=yes \
      ZABBIX_SERVER=10.0.0.1 \
      ZABBIX_PORT=10050 \
      ZABBIX_HOSTNAME=MEUSERVIDOR \
-     ZABBIX_PLUGINS="mysql redis" \
+     ZABBIX_PLUGINS="mysql memcached" \
      APPLY_FIREWALL=yes \
      bash <(curl -fsSL https://2lock.com.br/linuxagent) --auto
 
@@ -61,7 +61,7 @@ sudo ACCEPT_EULA=yes \
      ZABBIX_SERVER=10.0.0.1 \
      ZABBIX_PORT=10050 \
      ZABBIX_HOSTNAME=MEUSERVIDOR \
-     ZABBIX_PLUGINS="mysql redis" \
+     ZABBIX_PLUGINS="mysql memcached" \
      APPLY_FIREWALL=yes \
      ./zabbix_agent2_install.sh --auto
 ```
@@ -149,17 +149,16 @@ Durante a execução interativa, o script pergunta quais plugins opcionais do Za
 [1] MySQL
 [2] PostgreSQL
 [3] MongoDB
-[4] Redis
-[5] Memcached
-[6] MSSQL
-[7] Todos
+[4] Memcached
+[5] MSSQL
+[6] Todos
 [0] Nenhum (apenas zabbix-agent2)
 ```
 
 No modo automatizado (`--auto`), use `ZABBIX_PLUGINS` com nomes ou números separados por espaço, vírgula ou ponto e vírgula:
 
 ```bash
-ZABBIX_PLUGINS="mysql postgresql redis"
+ZABBIX_PLUGINS="mysql postgresql memcached"
 ZABBIX_PLUGINS="1,4,5"
 ZABBIX_PLUGINS="all"      # instala todos os plugins opcionais listados
 ZABBIX_PLUGINS="none"     # instala apenas zabbix-agent2
@@ -174,7 +173,6 @@ Os pacotes seguem o padrão `zabbix-agent2-plugin-<nome>`, por exemplo:
 | MySQL | `zabbix-agent2-plugin-mysql` |
 | PostgreSQL | `zabbix-agent2-plugin-postgresql` |
 | MongoDB | `zabbix-agent2-plugin-mongodb` |
-| Redis | `zabbix-agent2-plugin-redis` |
 | Memcached | `zabbix-agent2-plugin-memcached` |
 | MSSQL | `zabbix-agent2-plugin-mssql` |
 

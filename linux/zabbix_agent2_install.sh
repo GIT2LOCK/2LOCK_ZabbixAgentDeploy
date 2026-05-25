@@ -80,7 +80,7 @@ prompt_read() {
 # PLUGINS OPCIONAIS DO ZABBIX AGENT 2
 # Docker nao entra nesta lista: e tratado separadamente via permissao de grupo.
 # -----------------------------------------------------------------------------
-PLUGIN_KEYS=(mysql postgresql mongodb redis memcached mssql)
+PLUGIN_KEYS=(mysql postgresql mongodb memcached mssql)
 SELECTED_PLUGINS=()
 SELECTED_PLUGIN_PACKAGES=()
 
@@ -89,7 +89,6 @@ plugin_label() {
         mysql)      echo "MySQL" ;;
         postgresql) echo "PostgreSQL" ;;
         mongodb)    echo "MongoDB" ;;
-        redis)      echo "Redis" ;;
         memcached)  echo "Memcached" ;;
         mssql)      echo "MSSQL" ;;
         *)          return 1 ;;
@@ -98,7 +97,7 @@ plugin_label() {
 
 plugin_package() {
     case "$1" in
-        mysql|postgresql|mongodb|redis|memcached|mssql)
+        mysql|postgresql|mongodb|memcached|mssql)
             echo "zabbix-agent2-plugin-$1"
             ;;
         *)
@@ -116,9 +115,8 @@ plugin_key_from_token() {
         1|mysql)                  echo "mysql" ;;
         2|postgresql|postgres)    echo "postgresql" ;;
         3|mongodb|mongo)          echo "mongodb" ;;
-        4|redis)                  echo "redis" ;;
-        5|memcached)              echo "memcached" ;;
-        6|mssql|sqlserver)        echo "mssql" ;;
+        4|memcached)              echo "memcached" ;;
+        5|mssql|sqlserver)        echo "mssql" ;;
         *)                        return 1 ;;
     esac
 }
@@ -192,14 +190,14 @@ resolve_plugin_selection() {
                 clear_plugin_selection
                 return 0
                 ;;
-            7|all|todos|todas|'*')
+            6|all|todos|todas|'*')
                 select_all_plugins
                 return 0
                 ;;
         esac
 
         if ! key="$(plugin_key_from_token "$token")"; then
-            die "${source_label}: plugin/opcao invalida: '${token}'. Use numeros 1-7, 0, ou nomes como mysql,postgresql,redis. Docker nao e plugin instalavel."
+            die "${source_label}: plugin/opcao invalida: '${token}'. Use numeros 1-6, 0, ou nomes como mysql,postgresql,memcached. Docker nao e plugin instalavel."
         fi
 
         if ! plugin_already_selected "$key"; then
@@ -221,10 +219,9 @@ prompt_plugin_selection() {
     echo "  [1] MySQL"
     echo "  [2] PostgreSQL"
     echo "  [3] MongoDB"
-    echo "  [4] Redis"
-    echo "  [5] Memcached"
-    echo "  [6] MSSQL"
-    echo "  [7] Todos"
+    echo "  [4] Memcached"
+    echo "  [5] MSSQL"
+    echo "  [6] Todos"
     echo "  [0] Nenhum (apenas zabbix-agent2)"
     echo ""
     prompt_read input_plugins "  Opcoes (ex: 1 3 ou 0 para nenhum): "
