@@ -86,6 +86,20 @@ function Get-PluginLabel {
     }
 }
 
+# Built-in = ja compilado no zabbix_agent2.exe, nenhuma instalacao extra.
+# Loadable = exige o pacote separado zabbix_agent2_plugins-<versao>-windows-amd64.msi.
+# Fonte: documentacao oficial (Loadable plugins / Windows agent installation from MSI)
+# e log real de "zabbix_agent2 -t ... -v" listando os plugins built-in.
+$BuiltinPluginKeys  = @("mysql", "memcached")
+$LoadablePluginKeys = @("postgresql", "mongodb", "mssql")
+
+function Get-PluginKind {
+    param([string]$Key)
+    if ($BuiltinPluginKeys -contains $Key)  { return "builtin" }
+    if ($LoadablePluginKeys -contains $Key) { return "loadable" }
+    return "desconhecido"
+}
+
 function Get-PluginKeyFromToken {
     param([string]$Token)
     $t = $Token.ToLowerInvariant()
@@ -122,16 +136,20 @@ function Resolve-PluginSelection {
 }
 
 function Show-PluginPrompt {
-    Write-Host "  Plugins opcionais do Zabbix Agent 2 (ja compilados no binario)" -ForegroundColor White
-    Write-Host "  Apenas MSSQL tem guia completo neste projeto (windows\plugins\mssql.md)." -ForegroundColor DarkGray
+    Write-Host "  Plugins opcionais do Zabbix Agent 2" -ForegroundColor White
+    Write-Host "  MySQL e Memcached ja vem compilados no zabbix_agent2.exe (built-in)." -ForegroundColor DarkGray
+    Write-Host "  PostgreSQL, MongoDB e MSSQL sao plugins 'loadable': este script baixa" -ForegroundColor DarkGray
+    Write-Host "  e instala automaticamente o pacote zabbix_agent2_plugins se algum" -ForegroundColor DarkGray
+    Write-Host "  deles for selecionado. Apenas MSSQL tem guia completo neste projeto" -ForegroundColor DarkGray
+    Write-Host "  (windows\plugins\mssql.md)." -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Selecione os plugins a configurar (Enter = nenhum):"
     Write-Host ""
-    Write-Host "  [1] MySQL"
-    Write-Host "  [2] PostgreSQL"
-    Write-Host "  [3] MongoDB"
-    Write-Host "  [4] Memcached"
-    Write-Host "  [5] MSSQL"
+    Write-Host "  [1] MySQL       (built-in)"
+    Write-Host "  [2] PostgreSQL  (loadable, instala pacote extra)"
+    Write-Host "  [3] MongoDB     (loadable, instala pacote extra)"
+    Write-Host "  [4] Memcached   (built-in)"
+    Write-Host "  [5] MSSQL       (loadable, instala pacote extra)"
     Write-Host "  [6] Todos"
     Write-Host "  [0] Nenhum"
     Write-Host ""
@@ -491,12 +509,15 @@ if ($oldAgents) {
 Write-Host ""
 
 # -----------------------------------------------------------------------------
-# DOWNLOAD DO MSI OFICIAL (variante estatica, sem dependencia de OpenSSL)
+# DOWNLOAD DO MSI OFICIAL
+# No Windows nao existe variante "-static" do MSI (essa so existe nos tarballs
+# de Linux/FreeBSD/macOS); o pacote oficial e sempre com sufixo "-openssl",
+# e ja e autocontido (as bibliotecas vem embutidas no instalador).
 # -----------------------------------------------------------------------------
 Write-Separator
 Write-InfoMsg "Baixando Zabbix Agent 2 $ZabbixVersion (MSI oficial)..."
 
-$MsiName = "zabbix_agent2-$ZabbixVersion-windows-amd64-static.msi"
+$MsiName = "zabbix_agent2-$ZabbixVersion-windows-amd64-openssl.msi"
 $MsiUrl  = "https://cdn.zabbix.com/zabbix/binaries/stable/$ZabbixMajor/$ZabbixVersion/$MsiName"
 $MsiPath = Join-Path $env:TEMP $MsiName
 
@@ -545,6 +566,53 @@ if (-not (Test-Path $AgentExe)) {
 $AgentVersionFull = (& $AgentExe -V 2>&1 | Select-Object -First 1)
 Write-OkMsg "Instalado: $AgentVersionFull"
 Write-Host ""
+
+# -----------------------------------------------------------------------------
+# PACOTE DE PLUGINS LOADABLE (PostgreSQL / MongoDB / MSSQL)
+# MySQL e Memcached sao built-in (ja estao no zabbix_agent2.exe) e nao entram
+# aqui. PostgreSQL, MongoDB e MSSQL sao plugins "loadable": nao vem dentro do
+# MSI do agente, precisam do pacote separado zabbix_agent2_plugins.
+# -----------------------------------------------------------------------------
+$LoadableSelected = $SelectedPlugins | Where-Object { $LoadablePluginKeys -contains $_ }
+
+if ($LoadableSelected.Count -gt 0) {
+    Write-Separator
+    Write-InfoMsg "Plugins loadable selecionados ($(($LoadableSelected | ForEach-Object { Get-PluginLabel $_ }) -join ', ')): baixando pacote adicional..."
+
+    $PluginsMsiName = "zabbix_agent2_plugins-$ZabbixVersion-windows-amd64.msi"
+    $PluginsMsiUrl  = "https://cdn.zabbix.com/zabbix/binaries/stable/$ZabbixMajor/$ZabbixVersion/$PluginsMsiName"
+    $PluginsMsiPath = Join-Path $env:TEMP $PluginsMsiName
+
+    Write-InfoMsg "URL: $PluginsMsiUrl"
+    try {
+        Invoke-WebRequest -Uri $PluginsMsiUrl -OutFile $PluginsMsiPath -UseBasicParsing
+    } catch {
+        Write-ErrMsg "Falha ao baixar o pacote de plugins. Detalhe: $($_.Exception.Message)"
+        Write-WarnMsg "O agente base ja esta instalado e funcional; os plugins loadable"
+        Write-WarnMsg "selecionados ($(($LoadableSelected | ForEach-Object { Get-PluginLabel $_ }) -join ', ')) precisarao ser instalados manualmente depois."
+        $LoadableSelected = @()
+    }
+
+    if ($LoadableSelected.Count -gt 0 -and (Test-Path $PluginsMsiPath)) {
+        $PluginsMsiLog = Join-Path $LogDir "msi_plugins_install.log"
+        $pluginsProc = Start-Process -FilePath "msiexec.exe" -ArgumentList @(
+            "/i", "`"$PluginsMsiPath`"", "/qn", "/norestart", "/l*v", "`"$PluginsMsiLog`"",
+            "INSTALLFOLDER=`"$InstallDir`""
+        ) -Wait -NoNewWindow -PassThru
+
+        if ($pluginsProc.ExitCode -eq 0) {
+            Write-OkMsg "Pacote de plugins instalado (log: $PluginsMsiLog)."
+            Write-InfoMsg "O instalador oficial dos plugins ja gera seus proprios arquivos"
+            Write-InfoMsg ".conf em $AgentConfD (ex: mssql.conf). Confira e complete as"
+            Write-InfoMsg "credenciais neles alem do stub que este script adiciona abaixo."
+        } else {
+            Write-ErrMsg "Instalacao do pacote de plugins falhou (codigo $($pluginsProc.ExitCode)). Consulte: $PluginsMsiLog"
+            Write-WarnMsg "O agente base continua instalado e funcional normalmente."
+        }
+        Remove-Item -Path $PluginsMsiPath -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host ""
+}
 
 # -----------------------------------------------------------------------------
 # USER PARAMETER -- windows.top.cpu
@@ -599,13 +667,20 @@ if ($SelectedPlugins.Count -gt 0) {
 
     foreach ($plugin in $SelectedPlugins) {
         $label = Get-PluginLabel $plugin
-        $stubFile = Join-Path $AgentConfD "$plugin.conf"
+        $kind  = Get-PluginKind $plugin
+        $stubFile = Join-Path $AgentConfD "2lock_$plugin.conf"
 
         if ($plugin -eq "mssql") {
             $stubContent = @"
 # =============================================================================
-# Plugin MSSQL -- Zabbix Agent 2 -- 2LOCK
+# Plugin MSSQL (loadable) -- Zabbix Agent 2 -- 2LOCK
 # Ver guia completo: windows\plugins\mssql.md
+#
+# O pacote zabbix_agent2_plugins ja foi instalado por este script e deve ter
+# gerado um mssql.conf proprio em $AgentConfD com Plugins.MSSQL.System.Path
+# apontando para o binario do plugin. Este arquivo aqui e so um lembrete das
+# credenciais de sessao que ainda faltam preencher (no mssql.conf oficial,
+# nao aqui):
 # =============================================================================
 # Plugins.MSSQL.Sessions.<nome_sessao>.Uri=sqlserver://127.0.0.1:1433
 # Plugins.MSSQL.Sessions.<nome_sessao>.User=<usuario_monitoramento>
@@ -615,14 +690,28 @@ if ($SelectedPlugins.Count -gt 0) {
 #   zabbix_agent2.exe -t mssql.ping[<nome_sessao>]
 # Aplique o template oficial "MSSQL by Zabbix agent 2" no frontend.
 "@
+        } elseif ($kind -eq "loadable") {
+            $stubContent = @"
+# =============================================================================
+# Plugin $label (loadable) -- Zabbix Agent 2 -- 2LOCK
+# O pacote zabbix_agent2_plugins ja foi instalado por este script e deve ter
+# gerado seu proprio arquivo .conf em $AgentConfD, com o caminho do binario
+# (Plugins.$($label).System.Path) ja preenchido. Este arquivo e so um lembrete
+# das credenciais de sessao, ainda pendentes de preenchimento la, nao aqui.
+# Consulte a documentacao oficial do Zabbix para a sintaxe de
+# Plugins.$($label.ToUpper()).Sessions.<nome>.*
+# =============================================================================
+"@
         } else {
             $stubContent = @"
 # =============================================================================
-# Plugin $label -- Zabbix Agent 2 -- 2LOCK
-# Stub gerado automaticamente. Nao ha guia especifico deste plugin neste
-# repositorio ainda. Consulte a documentacao oficial do Zabbix para a
-# sintaxe de Plugins.$($label.ToUpper()).Sessions.<nome>.*
+# Plugin $label (built-in) -- Zabbix Agent 2 -- 2LOCK
+# Ja vem compilado no zabbix_agent2.exe, nenhuma instalacao adicional foi
+# necessaria. So falta configurar a sessao abaixo:
 # =============================================================================
+# Plugins.$label.Sessions.<nome_sessao>.Uri=tcp://127.0.0.1:<porta>
+# Plugins.$label.Sessions.<nome_sessao>.User=<usuario_monitoramento>
+# Plugins.$label.Sessions.<nome_sessao>.Password=<senha>
 "@
         }
 
