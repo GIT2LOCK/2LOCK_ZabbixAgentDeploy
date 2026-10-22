@@ -19,16 +19,16 @@
 zabbix-agent-deploy/
 │
 ├── linux/
-│   ├── zabbix_agent2_install.sh   ← Instalador automatizado
-│   ├── README.md                  ← Instruções de uso e parâmetros
+│   ├── zabbix_agent2_install.sh         ← Instalador automatizado
+│   ├── README.md                        ← Instruções de uso e parâmetros
 │   └── plugins/
-│       └── mysql.md               ← Configuração do plugin MySQL
+│       └── mysql.md                     ← Configuração do plugin MySQL
 │
 └── windows/
-    ├── zabbix_agent2_install.ps1  ← Instalador automatizado (PowerShell)
-    ├── README.md                  ← Instruções de uso e parâmetros
+    ├── zabbix_agent2_install_simple.ps1 ← Instalador interativo (PowerShell)
+    ├── README.md                        ← Instruções de uso
     └── plugins/
-        └── mssql.md               ← Configuração do plugin MSSQL
+        └── mssql.md                     ← Configuração do plugin MSSQL
 ```
 
 > Cada pasta é **autossuficiente** — tudo que você precisa para instalar e configurar o agente em um determinado sistema operacional está dentro da pasta correspondente.
@@ -70,28 +70,37 @@ sudo ACCEPT_EULA=yes \
 
 ## 🪟 Windows — Instalação Rápida
 
-Compatível com **Windows Server 2016 / 2019 / 2022**.
+Compatível com **Windows Server 2016 / 2019 / 2022** (x64, PowerShell 5.1 ou superior).
 
-### Uma linha — via 2LOCK (recomendado)
+### Uma linha — via GitHub (recomendado)
 
 Executar no **PowerShell como Administrador**:
 
 ```powershell
-iwr https://2lock.com.br/windowsagent | iex
+irm https://raw.githubusercontent.com/GIT2LOCK/2LOCK_ZabbixAgentDeploy/main/windows/zabbix_agent2_install_simple.ps1 | iex
 ```
 
-### Modo automatizado (sem interação)
+O instalador é **interativo** e faz as perguntas durante a execução:
+
+1. Aceite do termo de uso
+2. Nome do host (idêntico ao cadastrado no Zabbix)
+3. IP do Zabbix Server ou Proxy
+4. Porta do agente (padrão `10050`)
+5. Plugins opcionais
+
+### Download direto do GitHub
 
 ```powershell
-$env:ACCEPT_EULA     = "yes"
-$env:ZABBIX_SERVER   = "10.0.0.1"
-$env:ZABBIX_PORT     = "10050"
-$env:ZABBIX_HOSTNAME = "MEUSERVIDOR"
-$env:APPLY_FIREWALL  = "yes"
-iwr https://2lock.com.br/windowsagent | iex
+Invoke-WebRequest -Uri https://raw.githubusercontent.com/GIT2LOCK/2LOCK_ZabbixAgentDeploy/main/windows/zabbix_agent2_install_simple.ps1 -OutFile zabbix_agent2_install_simple.ps1
+
+# Inspecionar
+notepad zabbix_agent2_install_simple.ps1
+
+# Executar (PowerShell como Administrador)
+.\zabbix_agent2_install_simple.ps1
 ```
 
-> Veja o [README do Windows](windows/README.md) para detalhes completos de uso e parâmetros.
+> Não há modo automatizado no Windows nesta versão. Veja o [README do Windows](windows/README.md) para o passo a passo, exemplo de sessão e problemas comuns.
 
 ---
 
@@ -111,11 +120,14 @@ iwr https://2lock.com.br/windowsagent | iex
 
 ### 🪟 Windows
 
-- Baixa o instalador MSI oficial do Zabbix 7.0
-- Instala e configura o Zabbix Agent 2 como serviço Windows
-- Configura a porta de escuta e o hostname
-- Aplica regra de firewall restrita ao IP do Zabbix Server
-- Valida o serviço e a conectividade
+- Exibe o termo de uso e exige o aceite (`s`)
+- Pergunta hostname, IP do Zabbix Server, porta do agente (padrão `10050`) e plugins opcionais
+- Testa a conectividade com o Zabbix Server na porta `10051`
+- Baixa o MSI oficial da série 7.0 (`latest`) na CDN da Zabbix e valida a assinatura digital
+- Instala o Zabbix Agent 2 como serviço Windows e ajusta o `zabbix_agent2.conf` (com backup)
+- Instala o pacote `zabbix_agent2_plugins` quando há plugin *loadable* selecionado e gera stubs de configuração (sem credenciais)
+- Aplica regra de firewall restrita ao IP do Zabbix Server, com a porta no nome da regra
+- Inicia o serviço e mostra o resumo da instalação
 
 ---
 
@@ -125,7 +137,11 @@ iwr https://2lock.com.br/windowsagent | iex
 |--------|----|--------------|
 | MySQL  | Linux   | [linux/plugins/mysql.md](linux/plugins/mysql.md) |
 | MSSQL  | Windows | [windows/plugins/mssql.md](windows/plugins/mssql.md) |
+| MySQL, Memcached | Windows | Built-in no `zabbix_agent2.exe`; o instalador gera só o stub de configuração |
+| PostgreSQL, MongoDB | Windows | Pacote `zabbix_agent2_plugins` instalado pelo instalador; stub gerado, sessões a preencher |
 | Docker | Linux   | Automático via grupo `docker` — ver [linux/README.md](linux/README.md) |
+
+> No Windows, o instalador **não preenche credenciais** de plugin: os stubs são só comentários, e as sessões devem ser configuradas depois.
 
 ---
 
@@ -140,16 +156,18 @@ iwr https://2lock.com.br/windowsagent | iex
 | Ubuntu              | 22.04 LTS  | x86_64      | ✅ Validado   |
 | Ubuntu              | 20.04 LTS  | x86_64      | ✅ Validado   |
 | Debian              | 11 / 12    | x86_64      | ✅ Validado   |
-| Windows Server      | 2022       | x86_64      | 🔜 Em breve  |
-| Windows Server      | 2019       | x86_64      | 🔜 Em breve  |
+| Windows Server      | 2025       | x86_64      | 🔜 Em breve  |
+| Windows Server      | 2022       | x86_64      | ✅ Validado   |
+| Windows Server      | 2019       | x86_64      | ✅ Validado   |
+| Windows Server      | 2016       | x86_64      | 🔜 Em breve  |
 
 ---
 
 ## 📋 Pré-requisitos gerais
 
-- Acesso root (Linux) ou Administrador (Windows)
-- Conectividade com `repo.zabbix.com` (HTTPS)
-- IP do Zabbix Server acessível na rede
+- Acesso root (Linux) ou Administrador com PowerShell elevado (Windows)
+- Conectividade com `repo.zabbix.com` (Linux) ou `cdn.zabbix.com` (Windows), via HTTPS
+- IP do Zabbix Server acessível na rede (porta `10051` do servidor e a porta do agente, padrão `10050`)
 - NTP ativo no servidor (recomendado)
 
 ---
