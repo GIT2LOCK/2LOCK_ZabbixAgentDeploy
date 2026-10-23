@@ -4,7 +4,7 @@
 # 2LOCK - Instalador automatico do Zabbix Agent 2
 # Windows Server 64 bits | Zabbix 7.0 LTS
 # Uso: colar no PowerShell como Administrador e responder as perguntas
-# (NOVO) Termo de uso, porta do agente configuravel e plugins opcionais
+# Termo de uso, porta configuravel e suporte completo ao plugin MSSQL
 # ============================================================
 
 $ErrorActionPreference = "Stop"
@@ -23,23 +23,48 @@ if (-not $IsAdmin) {
 $BaseDir  = Join-Path $env:ProgramData "2LOCK\ZabbixAgent2"
 $MsiPath  = Join-Path $BaseDir "zabbix_agent2.msi"
 $MsiLog   = Join-Path $BaseDir "install-msi.log"
-# (NOVO) $RuleName agora e definido depois da pergunta da porta (inclui $ZabbixAgentPort)
 $MsiUrl   = "https://cdn.zabbix.com/zabbix/binaries/stable/7.0/latest/zabbix_agent2-7.0-latest-windows-amd64-openssl.msi"
 
 function Stop-Installer {
     param([string]$Message)
     Write-Host "`nERRO: $Message" -ForegroundColor Red
-    Write-Host "Log MSI: $MsiLog" -ForegroundColor Yellow
+    if (Test-Path $MsiLog) {
+        Write-Host "Log MSI: $MsiLog" -ForegroundColor Yellow
+    }
     throw "Instalacao abortada."
 }
 
 # ------------------------------------------------------------
-# (NOVO) PLUGINS OPCIONAIS
+# FUNCAO AUXILIAR: Definicao e atualizacao de parametros (.conf)
+# Evita parametros duplicados, preserva comentarios e substitui existentes
+# ------------------------------------------------------------
+function Set-AgentParameter {
+    param(
+        [System.Collections.Generic.List[string]]$ConfigLines,
+        [string]$Name,
+        [string]$Value
+    )
+    $Pattern = '^\s*' + [regex]::Escape($Name) + '\s*='
+    $Indexes = @()
+    for ($i = 0; $i -lt $ConfigLines.Count; $i++) {
+        if ($ConfigLines[$i] -match $Pattern) { $Indexes += $i }
+    }
+    if ($Indexes.Count -eq 0) {
+        [void]$ConfigLines.Add("$Name=$Value")
+    } else {
+        $ConfigLines[$Indexes[0]] = "$Name=$Value"
+        for ($j = 1; $j -lt $Indexes.Count; $j++) {
+            $ConfigLines[$Indexes[$j]] =
+                "# Duplicata desativada pelo instalador 2LOCK: " + $ConfigLines[$Indexes[$j]]
+        }
+    }
+}
+
+# ------------------------------------------------------------
+# PLUGINS OPCIONAIS
 # Built-in  = ja compilado no zabbix_agent2.exe, nenhuma instalacao extra.
 # Loadable  = exige o pacote separado zabbix_agent2_plugins-<versao>-windows-amd64.msi.
-# A selecao decide (a) se o pacote de plugins e baixado/instalado e
-# (b) quais stubs de configuracao sao gerados em zabbix_agent2.d\.
-# Apenas MSSQL tem guia completo (windows\plugins\mssql.md).
+# MSSQL     = plugin loadable com configuracao interativa completa.
 # ------------------------------------------------------------
 $PluginKeys         = @("mysql", "postgresql", "mongodb", "memcached", "mssql")
 $BuiltinPluginKeys  = @("mysql", "memcached")
@@ -81,8 +106,6 @@ function Get-PluginSelectionLabel {
     return (($SelectedPlugins | ForEach-Object { Get-PluginLabel $_ }) -join ", ")
 }
 
-# Retorna $true se a selecao e valida, $false se houver opcao invalida
-# (diferente do script maior: em vez de abortar, avisa e deixa o prompt repetir)
 function Resolve-PluginSelection {
     param([string]$Raw)
     $script:SelectedPlugins = @()
@@ -110,8 +133,7 @@ function Show-PluginPrompt {
     Write-Host "  MySQL e Memcached ja vem compilados no zabbix_agent2.exe (built-in)." -ForegroundColor DarkGray
     Write-Host "  PostgreSQL, MongoDB e MSSQL sao plugins 'loadable': este script baixa" -ForegroundColor DarkGray
     Write-Host "  e instala automaticamente o pacote zabbix_agent2_plugins se algum" -ForegroundColor DarkGray
-    Write-Host "  deles for selecionado. Apenas MSSQL tem guia completo neste projeto" -ForegroundColor DarkGray
-    Write-Host "  (windows\plugins\mssql.md)." -ForegroundColor DarkGray
+    Write-Host "  deles for selecionado. O plugin MSSQL e configurado interativamente." -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  Selecione os plugins a configurar (Enter = nenhum):"
     Write-Host ""
@@ -119,14 +141,24 @@ function Show-PluginPrompt {
     Write-Host "  [2] PostgreSQL  (loadable, instala pacote extra)"
     Write-Host "  [3] MongoDB     (loadable, instala pacote extra)"
     Write-Host "  [4] Memcached   (built-in)"
-    Write-Host "  [5] MSSQL       (loadable, instala pacote extra)"
+    Write-Host "  [5] MSSQL       (loadable, configuracao completa do SQL Server)"
     Write-Host "  [6] Todos"
     Write-Host "  [0] Nenhum"
     Write-Host ""
     do {
-        $raw = (Read-Host "  Opcoes (ex: 5 ou 0 para nenhum)").Trim()
+        $raw = (Read-Host "  Opcoes (ex: 5 para MSSQL, ou 0 para nenhum)").Trim()
         $ok  = Resolve-PluginSelection $raw
     } while (-not $ok)
+
+    # Caso o usuario pressione Enter direto, oferece de forma transparente a opcao do MSSQL
+    if ($SelectedPlugins.Count -eq 0 -and $raw -eq "") {
+        Write-Host ""
+        $optMssql = (Read-Host "  Deseja configurar o plugin Microsoft SQL Server (MSSQL)? [s/N]").Trim()
+        if ($optMssql -match '^[sS]$') {
+            $script:SelectedPlugins = @("mssql")
+        }
+    }
+
     Write-Host "Plugins selecionados: $(Get-PluginSelectionLabel)." -ForegroundColor Green
 }
 
@@ -134,7 +166,7 @@ Write-Host "=============================================="
 Write-Host "  2LOCK - Zabbix Agent 2 para Windows Server"
 Write-Host "==============================================`n"
 
-# 0. (NOVO) Termo de uso - aceite obrigatorio
+# 0. Termo de uso - aceite obrigatorio
 Write-Host "  TERMO DE USO -- LEIA ANTES DE CONTINUAR" -ForegroundColor White
 Write-Host "----------------------------------------------"
 Write-Host ""
@@ -194,7 +226,7 @@ do {
     }
 } while ([string]::IsNullOrWhiteSpace($ZabbixServer))
 
-# 2b. (NOVO) Porta do agente (default 10050; a porta 10051 do Server NAO muda)
+# 2b. Porta do agente (default 10050; a porta 10051 do Server NAO muda)
 Write-Host "`nPorta padrao do Zabbix: 10050" -ForegroundColor DarkGray
 do {
     $InputPort = (Read-Host "Porta do agente [Enter = 10050]").Trim()
@@ -210,19 +242,126 @@ do {
 } while (-not $PortValid)
 $ZabbixAgentPort = [string][int]$ZabbixAgentPort   # normaliza (ex: 010050 -> 10050)
 
-# Nome da regra de firewall inclui a porta (evita conflito entre portas diferentes)
-$RuleName = "2LOCK - Zabbix Agent 2 - TCP $ZabbixAgentPort"
+# Portas de comunicacao do Zabbix a serem liberadas no firewall (10050 e 10051)
+$FwInboundPorts = @($ZabbixAgentPort, "10050", "10051") | Select-Object -Unique
 
-# 2c. (NOVO) Selecao de plugins opcionais
+# 2c. Selecao de plugins opcionais
 Write-Host ""
 Show-PluginPrompt
+
+# 2d. Configuracao interativa do Microsoft SQL Server (MSSQL)
+$SqlPort                   = "1433"
+$SqlAddress                = "localhost"
+$SqlPassword               = ""
+$SqlDatabase               = "master"
+$SqlEncrypt                = "true"
+$SqlTrustServerCertificate = "false"
+$SqlTimeout                = "10"
+$SqlUri                    = ""
+$SqlUser                   = "zbx_monitor"  # Fixo, sem possibilidade de alteracao
+
+if ($SelectedPlugins -contains "mssql") {
+    Write-Host "`n----------------------------------------------"
+    Write-Host "  Configuracao do Microsoft SQL Server (MSSQL)" -ForegroundColor White
+    Write-Host "----------------------------------------------"
+    Write-Host "  Usuario do SQL Server: zbx_monitor (fixo, nao editavel)" -ForegroundColor DarkGray
+    Write-Host ""
+
+    # 1. Porta do SQL Server (padrao 1433)
+    do {
+        $RawSqlPort = (Read-Host "  Porta do SQL Server [Enter = 1433]").Trim()
+        $SqlPort = if ($RawSqlPort) { $RawSqlPort } else { "1433" }
+        $SqlPortValid = ($SqlPort -match '^\d{1,5}$') -and ([int64]$SqlPort -ge 1) -and ([int64]$SqlPort -le 65535)
+        if (-not $SqlPortValid) {
+            Write-Host "  Porta invalida. Informe um numero inteiro entre 1 e 65535." -ForegroundColor Yellow
+        }
+    } while (-not $SqlPortValid)
+    $SqlPort = [string][int]$SqlPort
+
+    # 2. Endereco/instancia do SQL Server (padrao localhost)
+    $RawSqlAddress = (Read-Host "  Endereco/instancia do SQL Server [Enter = localhost]").Trim()
+    $SqlAddress = if ($RawSqlAddress) { $RawSqlAddress } else { "localhost" }
+
+    # 3. Senha do usuario SQL (zbx_monitor - entrada segura)
+    do {
+        $SqlPasswordSecure = Read-Host "  Senha do usuario SQL (zbx_monitor)" -AsSecureString
+        $SqlPassword = [System.Net.NetworkCredential]::new("", $SqlPasswordSecure).Password
+        if ([string]::IsNullOrEmpty($SqlPassword)) {
+            Write-Host "  A senha do usuario SQL nao pode ficar vazia." -ForegroundColor Yellow
+        }
+    } while ([string]::IsNullOrEmpty($SqlPassword))
+
+    # 4. Banco de dados (padrao master)
+    $RawSqlDb = (Read-Host "  Banco de dados [Enter = master]").Trim()
+    $SqlDatabase = if ($RawSqlDb) { $RawSqlDb } else { "master" }
+
+    # 5. Criptografia (Encrypt, padrao true)
+    do {
+        $RawSqlEncrypt = (Read-Host "  Criptografia (Encrypt: true/false/strict/disable) [Enter = true]").Trim().ToLowerInvariant()
+        $SqlEncrypt = if ($RawSqlEncrypt) { $RawSqlEncrypt } else { "true" }
+        if ($SqlEncrypt -in @("s", "sim", "y", "yes", "true", "t")) { $SqlEncrypt = "true" }
+        elseif ($SqlEncrypt -in @("n", "nao", "não", "no", "false", "f")) { $SqlEncrypt = "false" }
+
+        $EncryptValid = $SqlEncrypt -in @("true", "false", "strict", "disable")
+        if (-not $EncryptValid) {
+            Write-Host "  Opcao invalida. Use true, false, strict ou disable." -ForegroundColor Yellow
+        }
+    } while (-not $EncryptValid)
+
+    # 6. Validacao do certificado (TrustServerCertificate, padrao false)
+    do {
+        $RawSqlTrust = (Read-Host "  Validar certificado (TrustServerCertificate: true/false) [Enter = false]").Trim().ToLowerInvariant()
+        $SqlTrustServerCertificate = if ($RawSqlTrust) { $RawSqlTrust } else { "false" }
+        if ($SqlTrustServerCertificate -in @("s", "sim", "y", "yes", "true", "t")) { $SqlTrustServerCertificate = "true" }
+        elseif ($SqlTrustServerCertificate -in @("n", "nao", "não", "no", "false", "f")) { $SqlTrustServerCertificate = "false" }
+
+        $TrustValid = $SqlTrustServerCertificate -in @("true", "false")
+        if (-not $TrustValid) {
+            Write-Host "  Opcao invalida. Use true ou false." -ForegroundColor Yellow
+        }
+    } while (-not $TrustValid)
+
+    # 7. Timeout (padrao 10)
+    do {
+        $RawSqlTimeout = (Read-Host "  Timeout do plugin MSSQL em segundos (1-30) [Enter = 10]").Trim()
+        $SqlTimeout = if ($RawSqlTimeout) { $RawSqlTimeout } else { "10" }
+        $SqlTimeoutValid = ($SqlTimeout -match '^\d{1,2}$') -and ([int]$SqlTimeout -ge 1) -and ([int]$SqlTimeout -le 30)
+        if (-not $SqlTimeoutValid) {
+            Write-Host "  Timeout invalido. Informe um numero inteiro entre 1 e 30." -ForegroundColor Yellow
+        }
+    } while (-not $SqlTimeoutValid)
+    $SqlTimeout = [string][int]$SqlTimeout
+
+    # Normalizacao e composicao do URI (schema sqlserver://)
+    $CleanAddress = $SqlAddress.Trim()
+    if ($CleanAddress -match '^sqlserver://(.*)$') {
+        $CleanAddress = $Matches[1]
+    }
+    $CleanAddress = $CleanAddress -replace '\\', '/'
+
+    if ($CleanAddress -match ':\d+$') {
+        $SqlUri = "sqlserver://$CleanAddress"
+    } else {
+        $SqlUri = "sqlserver://${CleanAddress}:${SqlPort}"
+    }
+}
 
 Write-Host "`nResumo:"
 Write-Host "  Host Zabbix   : $ZabbixHostname"
 Write-Host "  Servidor      : $ZabbixServer"
 Write-Host "  Porta ativa   : TCP 10051"
 Write-Host "  Porta passiva : TCP $ZabbixAgentPort"
-Write-Host "  Plugins       : $(Get-PluginSelectionLabel)`n"
+Write-Host "  Plugins       : $(Get-PluginSelectionLabel)"
+if ($SelectedPlugins -contains "mssql") {
+    Write-Host "  SQL Server    : $SqlAddress"
+    Write-Host "  Porta SQL     : $SqlPort"
+    Write-Host "  Usuario SQL   : zbx_monitor (fixo)"
+    Write-Host "  Banco SQL     : $SqlDatabase"
+    Write-Host "  Encrypt       : $SqlEncrypt"
+    Write-Host "  TrustCert     : $SqlTrustServerCertificate"
+    Write-Host "  Timeout SQL   : ${SqlTimeout}s"
+}
+Write-Host ""
 
 # 3. Teste de conectividade com o Zabbix Server (TCP 10051, timeout curto)
 Write-Host "Testando conectividade com $ZabbixServer na porta 10051..." -ForegroundColor Cyan
@@ -252,7 +391,7 @@ try {
     Stop-Installer "Nao foi possivel criar o diretorio de trabalho: $($_.Exception.Message)"
 }
 
-# 5. Download do MSI
+# 5. Download do MSI do Zabbix Agent 2
 try {
     Write-Host "[1/6] Baixando o Zabbix Agent 2..." -ForegroundColor Cyan
 
@@ -274,11 +413,10 @@ try {
     Stop-Installer "Falha ao baixar ou validar o MSI: $($_.Exception.Message)"
 }
 
-# 6. Instalacao silenciosa
+# 6. Instalacao silenciosa do agente base
 try {
-    Write-Host "[2/6] Instalando o agente..." -ForegroundColor Cyan
+    Write-Host "[2/6] Instalando o agente base..." -ForegroundColor Cyan
 
-    # (NOVO) LISTENPORT agora usa $ZabbixAgentPort
     $InstallArgs = "/i `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
                    "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
                    "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
@@ -298,34 +436,47 @@ try {
     Stop-Installer "Falha durante a instalacao: $($_.Exception.Message)"
 }
 
-# 6b. (NOVO) Descobrir a pasta de instalacao do agente (so se houver plugins)
-$InstallDir = $null
-$AgentExe   = $null
-if ($SelectedPlugins.Count -gt 0) {
-    $SvcPre = Get-CimInstance Win32_Service |
-        Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
-        Select-Object -First 1
-    if (-not $SvcPre) {
-        Stop-Installer "O servico do Zabbix Agent 2 nao foi encontrado apos a instalacao."
-    }
-    $ExePre = [regex]::Match($SvcPre.PathName, '(?i)"?([^"]*zabbix_agent2\.exe)"?')
-    if (-not $ExePre.Success) {
-        Stop-Installer "Nao foi possivel determinar a pasta de instalacao do agente."
-    }
-    $AgentExe   = $ExePre.Groups[1].Value
-    $InstallDir = Split-Path $AgentExe
+# 6b. Localizar o servico e a pasta de instalacao do agente
+Write-Host "[3/6] Localizando o servico e caminhos do agente..." -ForegroundColor Cyan
+
+$Service = Get-CimInstance Win32_Service |
+    Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
+    Select-Object -First 1
+
+if (-not $Service) {
+    Stop-Installer "O servico do Zabbix Agent 2 nao foi encontrado apos a instalacao."
 }
 
-# 6c. (NOVO) Pacote de plugins LOADABLE (PostgreSQL / MongoDB / MSSQL)
+$ExeMatch = [regex]::Match($Service.PathName, '(?i)"?([^"]*zabbix_agent2\.exe)"?')
+if (-not $ExeMatch.Success) {
+    Stop-Installer "Nao foi possivel determinar a pasta de instalacao do agente."
+}
+$AgentExe   = $ExeMatch.Groups[1].Value
+$InstallDir = Split-Path $AgentExe
+
+if ($Service.PathName -match '(?i)(?:--config|-c)\s+"([^"]+\.conf)"') {
+    $ConfigPath = $Matches[1]
+} elseif ($Service.PathName -match '(?i)(?:--config|-c)\s+(\S+\.conf)') {
+    $ConfigPath = $Matches[1]
+} else {
+    $ConfigPath = Join-Path $InstallDir "zabbix_agent2.conf"
+}
+
+if (-not $ConfigPath -or -not (Test-Path $ConfigPath)) {
+    Stop-Installer "Nao foi possivel localizar o arquivo de configuracao: $ConfigPath"
+}
+Write-Host "Agente: $AgentExe" -ForegroundColor DarkGray
+Write-Host "Config: $ConfigPath" -ForegroundColor DarkGray
+
+# 6c. Pacote de plugins LOADABLE (PostgreSQL / MongoDB / MSSQL)
 $PluginsInstalled = $false
 $PluginsMsiLog    = Join-Path $BaseDir "msi_plugins_install.log"
 $LoadableSelected = @($SelectedPlugins | Where-Object { $LoadablePluginKeys -contains $_ })
 
 if ($LoadableSelected.Count -gt 0) {
     $LoadableLabels = ($LoadableSelected | ForEach-Object { Get-PluginLabel $_ }) -join ", "
-    Write-Host "[2b/6] Instalando pacote de plugins ($LoadableLabels)..." -ForegroundColor Cyan
+    Write-Host "[3b/6] Instalando pacote de plugins ($LoadableLabels)..." -ForegroundColor Cyan
 
-    # A versao do pacote de plugins deve ser a mesma do agente instalado
     $AgentVersionNum = $null
     try {
         $VerLine = (& $AgentExe -V 2>&1 | Select-Object -First 1)
@@ -351,7 +502,21 @@ if ($LoadableSelected.Count -gt 0) {
             $PluginsDownloaded = $true
         }
     } catch {
-        Write-Host "Falha ao baixar o pacote de plugins: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Falha ao baixar pacote pela versao detectada ($PluginsMsiUrl): $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    # Fallback para latest se necessario
+    if (-not $PluginsDownloaded -and $PluginsFolder -ne "latest") {
+        try {
+            $FallbackUrl = "https://cdn.zabbix.com/zabbix/binaries/stable/7.0/latest/zabbix_agent2_plugins-7.0-latest-windows-amd64.msi"
+            Write-Host "Tentando download de fallback ($FallbackUrl)..." -ForegroundColor Cyan
+            Invoke-WebRequest -Uri $FallbackUrl -OutFile $PluginsMsiPath -UseBasicParsing
+            if ((Test-Path $PluginsMsiPath) -and (Get-Item $PluginsMsiPath).Length -gt 100KB) {
+                $PluginsDownloaded = $true
+            }
+        } catch {
+            Write-Host "Falha no download de fallback: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
     }
 
     if (-not $PluginsDownloaded) {
@@ -366,7 +531,7 @@ if ($LoadableSelected.Count -gt 0) {
 
             if ($PluginsProc.ExitCode -in @(0, 3010)) {
                 $PluginsInstalled = $true
-                Write-Host "Pacote de plugins instalado. Log: $PluginsMsiLog" -ForegroundColor Green
+                Write-Host "Pacote de plugins instalado com sucesso. Log: $PluginsMsiLog" -ForegroundColor Green
             } else {
                 Write-Host "O MSI de plugins terminou com codigo $($PluginsProc.ExitCode). Consulte: $PluginsMsiLog" -ForegroundColor Yellow
                 Write-Host "O agente base continua instalado e funcional." -ForegroundColor Yellow
@@ -380,68 +545,143 @@ if ($LoadableSelected.Count -gt 0) {
     Remove-Item -Path $PluginsMsiPath -Force -ErrorAction SilentlyContinue
 }
 
-# 6d. (NOVO) Stubs de configuracao dos plugins selecionados
-# Apenas comentarios: NAO configura credenciais automaticamente.
+# Verificacao de compatibilidade e binario do MSSQL
+$MssqlPluginExe = $null
+if ($SelectedPlugins -contains "mssql") {
+    if (-not [Environment]::Is64BitOperatingSystem) {
+        Write-Host "AVISO DE COMPATIBILIDADE: Sistema operacional nao e 64 bits. O plugin MSSQL exige x64." -ForegroundColor Yellow
+    }
+
+    $MssqlBinaryCandidates = @(
+        Join-Path $InstallDir "zabbix-agent2-plugin-mssql.exe",
+        Join-Path $InstallDir "plugins\zabbix-agent2-plugin-mssql.exe",
+        Join-Path $InstallDir "zabbix_agent2.d\plugins.d\zabbix-agent2-plugin-mssql.exe"
+    )
+    foreach ($cand in $MssqlBinaryCandidates) {
+        if (Test-Path $cand) {
+            $MssqlPluginExe = $cand
+            break
+        }
+    }
+
+    if ($MssqlPluginExe) {
+        Write-Host "Plugin MSSQL compativel: binario localizado em '$MssqlPluginExe'." -ForegroundColor Green
+    } else {
+        $MssqlPluginExe = Join-Path $InstallDir "zabbix-agent2-plugin-mssql.exe"
+        Write-Host "AVISO: Executavel zabbix-agent2-plugin-mssql.exe nao detectado de imediato. Configurando caminho padrao: $MssqlPluginExe" -ForegroundColor Yellow
+    }
+}
+
+# 6d. Configuracao dos plugins (MSSQL automatica e stubs para os demais)
+$MssqlConfPath = $null
 if ($SelectedPlugins.Count -gt 0) {
-    Write-Host "[2c/6] Gerando stubs de configuracao dos plugins..." -ForegroundColor Cyan
+    Write-Host "[3c/6] Gerando configuracoes dos plugins..." -ForegroundColor Cyan
 
-    $AgentConfD = Join-Path $InstallDir "zabbix_agent2.d"
+    $AgentConfD   = Join-Path $InstallDir "zabbix_agent2.d"
+    $PluginsConfD = Join-Path $AgentConfD "plugins.d"
     New-Item -Path $AgentConfD -ItemType Directory -Force | Out-Null
+    New-Item -Path $PluginsConfD -ItemType Directory -Force | Out-Null
 
-    # Sem BOM (o agente rejeita BOM em arquivos .conf, inclusive nos includes)
-    $StubEncoding = New-Object System.Text.UTF8Encoding($false)
+    $ConfEncoding = New-Object System.Text.UTF8Encoding($false)
 
+    # 1. Configuracao completa do plugin MSSQL
+    if ($SelectedPlugins -contains "mssql") {
+        # Localiza o arquivo correto do plugin: plugins.d\mssql.conf (padrao Zabbix) ou zabbix_agent2.d\mssql.conf
+        if (Test-Path (Join-Path $PluginsConfD "mssql.conf")) {
+            $MssqlConfPath = Join-Path $PluginsConfD "mssql.conf"
+        } elseif (Test-Path (Join-Path $AgentConfD "mssql.conf")) {
+            $MssqlConfPath = Join-Path $AgentConfD "mssql.conf"
+        } else {
+            $MssqlConfPath = Join-Path $PluginsConfD "mssql.conf"
+        }
+
+        Write-Host "Configurando parametros do MSSQL em '$MssqlConfPath'..." -ForegroundColor Cyan
+
+        try {
+            $MssqlLines = [System.Collections.Generic.List[string]]::new()
+            if (Test-Path $MssqlConfPath) {
+                $MssqlBak = "$MssqlConfPath.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+                Copy-Item -Path $MssqlConfPath -Destination $MssqlBak -Force
+                [System.IO.File]::ReadAllLines($MssqlConfPath) | ForEach-Object { [void]$MssqlLines.Add($_) }
+            } else {
+                [void]$MssqlLines.Add("### Configuracao do Plugin MSSQL - Zabbix Agent 2 (2LOCK)")
+                [void]$MssqlLines.Add("")
+            }
+
+            # Caminho do plugin e timeout
+            if ($MssqlPluginExe) {
+                Set-AgentParameter $MssqlLines "Plugins.MSSQL.System.Path" $MssqlPluginExe
+            }
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Timeout"                $SqlTimeout
+
+            # Parametros padrao (Default.*)
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Default.Uri"            $SqlUri
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Default.User"           $SqlUser
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Default.Password"       $SqlPassword
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Default.Database"       $SqlDatabase
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Default.Encrypt"        $SqlEncrypt
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Default.TrustServerCertificate" $SqlTrustServerCertificate
+
+            # Parametros de sessao nomeada MSSQL (compatibilidade com templates que usam nome de sessao)
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Sessions.MSSQL.Uri"     $SqlUri
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Sessions.MSSQL.User"    $SqlUser
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Sessions.MSSQL.Password" $SqlPassword
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Sessions.MSSQL.Database" $SqlDatabase
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Sessions.MSSQL.Encrypt" $SqlEncrypt
+            Set-AgentParameter $MssqlLines "Plugins.MSSQL.Sessions.MSSQL.TrustServerCertificate" $SqlTrustServerCertificate
+
+            [System.IO.File]::WriteAllLines($MssqlConfPath, [string[]]$MssqlLines.ToArray(), $ConfEncoding)
+
+            # Validacao pos-escrita (garante que nao ha BOM)
+            $mBytes = [System.IO.File]::ReadAllBytes($MssqlConfPath)
+            if ($mBytes.Length -ge 3 -and $mBytes[0] -eq 0xEF -and $mBytes[1] -eq 0xBB -and $mBytes[2] -eq 0xBF) {
+                Stop-Installer "O arquivo $MssqlConfPath foi gravado com BOM. Abortando para evitar falha no servico."
+            }
+
+            Write-Host "Parametros do MSSQL configurados com sucesso (sem BOM)." -ForegroundColor Green
+
+            # Remove stub legado se existir para evitar confusao ou instrucoes obsoletas
+            $LegacyStub = Join-Path $AgentConfD "2lock_mssql.conf"
+            if (Test-Path $LegacyStub) {
+                Remove-Item -Path $LegacyStub -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+            Write-Host "Falha ao gravar configuracao do MSSQL: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+
+    # 2. Stubs dos demais plugins selecionados (apenas informativos)
+    $OtherPlugins = @($SelectedPlugins | Where-Object { $_ -ne "mssql" })
     $PkgLine = if ($PluginsInstalled) {
         "O pacote zabbix_agent2_plugins ja foi instalado por este script"
     } else {
         "ATENCAO: o pacote zabbix_agent2_plugins NAO foi instalado por este script (instale manualmente)"
     }
 
-    foreach ($plugin in $SelectedPlugins) {
+    foreach ($plugin in $OtherPlugins) {
         $label    = Get-PluginLabel $plugin
         $kind     = Get-PluginKind $plugin
         $stubFile = Join-Path $AgentConfD "2lock_$plugin.conf"
 
-        if ($plugin -eq "mssql") {
-            $stubContent = @"
-# =============================================================================
-# Plugin MSSQL (loadable) -- Zabbix Agent 2 -- 2LOCK
-# Ver guia completo: windows\plugins\mssql.md
-#
-# $PkgLine
-# e ele deve ter gerado um .conf proprio em $AgentConfD com
-# Plugins.MSSQL.System.Path apontando para o binario do plugin. Este arquivo
-# aqui e so um lembrete das credenciais de sessao que ainda faltam preencher
-# (no .conf oficial, nao aqui):
-# =============================================================================
-# Plugins.MSSQL.Sessions.<nome_sessao>.Uri=sqlserver://127.0.0.1:1433
-# Plugins.MSSQL.Sessions.<nome_sessao>.User=<usuario_monitoramento>
-# Plugins.MSSQL.Sessions.<nome_sessao>.Password=<senha>
-#
-# Apos configurar, valide com:
-#   zabbix_agent2.exe -t mssql.ping[<nome_sessao>]
-# Aplique o template oficial "MSSQL by Zabbix agent 2" no frontend.
-"@
-            Write-Host "  MSSQL: guia completo em windows\plugins\mssql.md" -ForegroundColor DarkGray
-        } elseif ($kind -eq "loadable") {
+        if ($kind -eq "loadable") {
             $stubContent = @"
 # =============================================================================
 # Plugin $label (loadable) -- Zabbix Agent 2 -- 2LOCK
 # $PkgLine
-# e ele deve ter gerado seu proprio arquivo .conf em $AgentConfD, com o caminho
+# e ele deve ter gerado seu proprio arquivo .conf em $PluginsConfD, com o caminho
 # do binario (Plugins.$($label).System.Path) ja preenchido. Este arquivo e so um
-# lembrete das credenciais de sessao, ainda pendentes de preenchimento la, nao aqui.
+# lembrete das credenciais de sessao, ainda pendentes de preenchimento la.
 # Consulte a documentacao oficial do Zabbix para a sintaxe de
 # Plugins.$($label.ToUpper()).Sessions.<nome>.*
 # =============================================================================
 "@
-            Write-Host "  ${label}: o MSI de plugins ja gera o .conf oficial (Plugins.$label.System.Path)." -ForegroundColor DarkGray
+            Write-Host "  ${label}: o pacote de plugins gera a configuracao em plugins.d." -ForegroundColor DarkGray
         } else {
             $stubContent = @"
 # =============================================================================
 # Plugin $label (built-in) -- Zabbix Agent 2 -- 2LOCK
 # Ja vem compilado no zabbix_agent2.exe, nenhuma instalacao adicional foi
-# necessaria. So falta configurar a sessao abaixo:
+# necessaria. Configure a sessao abaixo:
 # =============================================================================
 # Plugins.$label.Sessions.<nome_sessao>.Uri=tcp://127.0.0.1:<porta>
 # Plugins.$label.Sessions.<nome_sessao>.User=<usuario_monitoramento>
@@ -451,7 +691,7 @@ if ($SelectedPlugins.Count -gt 0) {
         }
 
         try {
-            [System.IO.File]::WriteAllText($stubFile, $stubContent, $StubEncoding)
+            [System.IO.File]::WriteAllText($stubFile, $stubContent, $ConfEncoding)
             Write-Host "Stub gerado: $stubFile" -ForegroundColor Green
         } catch {
             Write-Host "Nao foi possivel gerar o stub de ${label}: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -459,38 +699,8 @@ if ($SelectedPlugins.Count -gt 0) {
     }
 }
 
-# 7. Localizar servico e config
-Write-Host "[3/6] Localizando o servico e a configuracao..." -ForegroundColor Cyan
-
-$Service = Get-CimInstance Win32_Service |
-    Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
-    Select-Object -First 1
-
-if (-not $Service) {
-    Stop-Installer "O servico do Zabbix Agent 2 nao foi encontrado apos a instalacao."
-}
-
-$ConfigPath = $null
-
-if ($Service.PathName -match '(?i)(?:--config|-c)\s+"([^"]+\.conf)"') {
-    $ConfigPath = $Matches[1]
-}
-elseif ($Service.PathName -match '(?i)(?:--config|-c)\s+(\S+\.conf)') {
-    $ConfigPath = $Matches[1]
-}
-else {
-    $ExeMatch = [regex]::Match($Service.PathName, '(?i)"?([^"]*zabbix_agent2\.exe)"?')
-    if ($ExeMatch.Success) {
-        $ConfigPath = Join-Path (Split-Path $ExeMatch.Groups[1].Value) "zabbix_agent2.conf"
-    }
-}
-
-if (-not $ConfigPath -or -not (Test-Path $ConfigPath)) {
-    Stop-Installer "Nao foi possivel localizar o arquivo de configuracao. Caminho detectado: $ConfigPath"
-}
-
-# 8. Ajustar config
-Write-Host "[4/6] Configurando o agente..." -ForegroundColor Cyan
+# 8. Ajustar arquivo principal de configuracao (zabbix_agent2.conf)
+Write-Host "[4/6] Configurando o agente base..." -ForegroundColor Cyan
 
 try {
     $BackupPath = "$ConfigPath.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
@@ -499,33 +709,49 @@ try {
     $Lines = [System.Collections.Generic.List[string]]::new()
     [System.IO.File]::ReadAllLines($ConfigPath) | ForEach-Object { [void]$Lines.Add($_) }
 
-    function Set-AgentParameter {
-        param(
-            [System.Collections.Generic.List[string]]$ConfigLines,
-            [string]$Name,
-            [string]$Value
-        )
-        $Pattern = '^\s*' + [regex]::Escape($Name) + '\s*='
-        $Indexes = @()
-        for ($i = 0; $i -lt $ConfigLines.Count; $i++) {
-            if ($ConfigLines[$i] -match $Pattern) { $Indexes += $i }
-        }
-        if ($Indexes.Count -eq 0) {
-            [void]$ConfigLines.Add("$Name=$Value")
-        } else {
-            $ConfigLines[$Indexes[0]] = "$Name=$Value"
-            for ($j = 1; $j -lt $Indexes.Count; $j++) {
-                $ConfigLines[$Indexes[$j]] =
-                    "# Duplicata desativada pelo instalador 2LOCK: " + $ConfigLines[$Indexes[$j]]
-            }
-        }
-    }
-
     Set-AgentParameter $Lines "Server"       $ZabbixServer
     Set-AgentParameter $Lines "ServerActive" $ZabbixServer
     Set-AgentParameter $Lines "Hostname"     $ZabbixHostname
-    Set-AgentParameter $Lines "ListenPort"   $ZabbixAgentPort    # (NOVO) porta dinamica
+    Set-AgentParameter $Lines "ListenPort"   $ZabbixAgentPort
     Set-AgentParameter $Lines "Timeout"      "10"
+
+    # Garante inclusao dos diretorios de plugins em zabbix_agent2.conf
+    if ($SelectedPlugins.Count -gt 0) {
+        $HasIncludePluginD = $false
+        $HasIncludeConfD   = $false
+        for ($i = 0; $i -lt $Lines.Count; $i++) {
+            if ($Lines[$i] -match '^\s*Include\s*=.*plugins\.d') { $HasIncludePluginD = $true }
+            if ($Lines[$i] -match '^\s*Include\s*=.*zabbix_agent2\.d[\\/]\*\.conf') { $HasIncludeConfD = $true }
+        }
+
+        if (-not $HasIncludePluginD) {
+            $UncommentedP = $false
+            for ($i = 0; $i -lt $Lines.Count; $i++) {
+                if ($Lines[$i] -match '^\s*#\s*(Include\s*=.*plugins\.d[\\/]\*\.conf)') {
+                    $Lines[$i] = $Matches[1]
+                    $UncommentedP = $true
+                    break
+                }
+            }
+            if (-not $UncommentedP) {
+                [void]$Lines.Add("Include=.\zabbix_agent2.d\plugins.d\*.conf")
+            }
+        }
+
+        if (-not $HasIncludeConfD) {
+            $UncommentedC = $false
+            for ($i = 0; $i -lt $Lines.Count; $i++) {
+                if ($Lines[$i] -match '^\s*#\s*(Include\s*=.*zabbix_agent2\.d[\\/]\*\.conf)') {
+                    $Lines[$i] = $Matches[1]
+                    $UncommentedC = $true
+                    break
+                }
+            }
+            if (-not $UncommentedC) {
+                [void]$Lines.Add("Include=.\zabbix_agent2.d\*.conf")
+            }
+        }
+    }
 
     # Grava SEM BOM (obrigatorio: o agente rejeita BOM no conf)
     $Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -542,31 +768,54 @@ try {
     Stop-Installer "Falha ao alterar a configuracao: $($_.Exception.Message)"
 }
 
-# 9. Firewall
-Write-Host "[5/6] Configurando o firewall..." -ForegroundColor Cyan
+# 9. Firewall (Liberacao das portas 10050 e 10051)
+Write-Host "[5/6] Configurando o firewall (portas 10050 e 10051)..." -ForegroundColor Cyan
 
 try {
-    Get-NetFirewallRule -DisplayName $RuleName -ErrorAction SilentlyContinue |
+    # Remove regras anteriores da 2LOCK para evitar duplicatas ou conflitos
+    Get-NetFirewallRule -DisplayName "2LOCK - Zabbix Agent 2*" -ErrorAction SilentlyContinue |
         Remove-NetFirewallRule
 
-    # (NOVO) -LocalPort usa $ZabbixAgentPort
+    # 1. Regras de Entrada (Inbound): 10050 (consultas passivas) e 10051 (comunicacao Zabbix)
+    foreach ($port in $FwInboundPorts) {
+        $inDesc = if ($port -eq $ZabbixAgentPort -or $port -eq "10050") {
+            "Permite consultas passivas do Zabbix Server ($ZabbixServer) ao agente na porta $port."
+        } else {
+            "Permite comunicacao do Zabbix Server ($ZabbixServer) na porta $port."
+        }
+
+        New-NetFirewallRule `
+            -DisplayName "2LOCK - Zabbix Agent 2 - Entrada TCP $port" `
+            -Description $inDesc `
+            -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port `
+            -RemoteAddress $ZabbixServer -Profile Any | Out-Null
+    }
+
+    # 2. Regras de Saida (Outbound): 10051 (checagens ativas do agente para o Zabbix Server)
     New-NetFirewallRule `
-        -DisplayName $RuleName `
-        -Description "Permite consultas passivas somente do servidor Zabbix informado no instalador." `
-        -Direction Inbound -Action Allow -Protocol TCP -LocalPort $ZabbixAgentPort `
+        -DisplayName "2LOCK - Zabbix Agent 2 - Saida TCP 10051" `
+        -Description "Permite conexoes ativas e envio de dados do agente para o Zabbix Server ($ZabbixServer) na porta 10051." `
+        -Direction Outbound -Action Allow -Protocol TCP -RemotePort "10051" `
         -RemoteAddress $ZabbixServer -Profile Any | Out-Null
 
-    Write-Host "Regra de entrada criada (TCP $ZabbixAgentPort), restrita a $ZabbixServer." -ForegroundColor Green
+    # Se a porta do agente for customizada, garante tambem saida correspondente
+    if ($ZabbixAgentPort -ne "10050") {
+        New-NetFirewallRule `
+            -DisplayName "2LOCK - Zabbix Agent 2 - Saida TCP $ZabbixAgentPort" `
+            -Description "Permite conexoes do agente para o servidor na porta $ZabbixAgentPort." `
+            -Direction Outbound -Action Allow -Protocol TCP -RemotePort $ZabbixAgentPort `
+            -RemoteAddress $ZabbixServer -Profile Any | Out-Null
+    }
+
+    Write-Host "Regras de firewall criadas com sucesso (Entrada: $(($FwInboundPorts) -join ', ') | Saida: 10051), restritas a $ZabbixServer." -ForegroundColor Green
 } catch {
-    Stop-Installer "Falha ao configurar a regra de firewall: $($_.Exception.Message)"
+    Stop-Installer "Falha ao configurar as regras de firewall: $($_.Exception.Message)"
 }
 
-# 10. Iniciar servico
-Write-Host "[6/6] Iniciando o servico..." -ForegroundColor Cyan
+# 10. Reiniciar servico e validar funcionamento
+Write-Host "[6/6] Reiniciando e validando o servico..." -ForegroundColor Cyan
 
 try {
-    # (AJUSTE) Se o MSI ja deixou o servico rodando, reinicia para aplicar o .conf
-    # editado e carregar os plugins; Start-Service nao faria nada nesse caso.
     $CurrentSvc = Get-Service -Name $Service.Name
     if ($CurrentSvc.Status -eq "Running") {
         Restart-Service -Name $Service.Name -Force
@@ -584,11 +833,52 @@ try {
     if ($FinalService.Status -ne "Running") {
         Stop-Installer "O servico nao iniciou. Consulte o log MSI e o log do agente."
     }
+    Write-Host "Servico do Zabbix Agent 2 em execucao." -ForegroundColor Green
+
+    # Validacao do agente base
+    try {
+        $AgentPing = (& $AgentExe -c $ConfigPath -t "agent.ping" 2>&1 | Out-String).Trim()
+        Write-Host "Validacao agent.ping: $AgentPing" -ForegroundColor DarkGray
+    } catch { }
+
+    # Validacao do plugin MSSQL se configurado
+    if ($SelectedPlugins -contains "mssql") {
+        Write-Host "`nValidando funcionamento do plugin MSSQL..." -ForegroundColor Cyan
+
+        $MssqlPingRes = $null
+        try {
+            $MssqlPingRes = (& $AgentExe -c $ConfigPath -t "mssql.ping" 2>&1 | Out-String).Trim()
+        } catch {
+            $MssqlPingRes = $_.Exception.Message
+        }
+        Write-Host "Teste 'mssql.ping' (Default): $MssqlPingRes" -ForegroundColor DarkGray
+
+        $SessionPingRes = $null
+        try {
+            $SessionPingRes = (& $AgentExe -c $ConfigPath -t "mssql.ping[MSSQL]" 2>&1 | Out-String).Trim()
+        } catch { }
+        if ($SessionPingRes) {
+            Write-Host "Teste 'mssql.ping[MSSQL]': $SessionPingRes" -ForegroundColor DarkGray
+        }
+
+        if ($MssqlPingRes -match '\[(?:u|s|m)\|1\]' -or $MssqlPingRes -match '\[1\]' -or
+            $SessionPingRes -match '\[(?:u|s|m)\|1\]' -or $SessionPingRes -match '\[1\]') {
+            Write-Host "[OK] Conexao com Microsoft SQL Server validada com sucesso! (ping = 1)" -ForegroundColor Green
+        } elseif ($MssqlPingRes -match '\[(?:u|s|m)\|0\]' -or $MssqlPingRes -match '\[0\]' -or
+                  $SessionPingRes -match '\[(?:u|s|m)\|0\]' -or $SessionPingRes -match '\[0\]') {
+            Write-Host "[AVISO] Plugin MSSQL ativo, mas o SQL Server retornou status 0." -ForegroundColor Yellow
+            Write-Host "Dica: Verifique se a instancia SQL esta ativa em ${SqlAddress}:${SqlPort} e as credenciais do zbx_monitor." -ForegroundColor Yellow
+        } elseif ($MssqlPingRes -match '(?i)Unknown metric') {
+            Write-Host "[ALERTA] O agente nao reconheceu a metrica mssql.ping. Verifique Plugins.MSSQL.System.Path." -ForegroundColor Red
+        } else {
+            Write-Host "[INFO] Resposta do teste MSSQL: $MssqlPingRes" -ForegroundColor Yellow
+        }
+    }
 } catch {
-    Stop-Installer "Falha ao iniciar o servico: $($_.Exception.Message)"
+    Stop-Installer "Falha ao iniciar ou validar o servico: $($_.Exception.Message)"
 }
 
-# 11. Resultado
+# 11. Resultado da instalacao
 Write-Host "`n=============================================="
 Write-Host "         RESULTADO DA INSTALACAO"
 Write-Host "=============================================="
@@ -596,13 +886,29 @@ Write-Host "Servico         : $($FinalService.Status)"
 Write-Host "Nome do servico : $($Service.Name)"
 Write-Host "Host Zabbix     : $ZabbixHostname"
 Write-Host "Servidor        : $ZabbixServer"
-Write-Host "Porta do agente : $ZabbixAgentPort"                                  # (NOVO)
-Write-Host "Plugins         : $(Get-PluginSelectionLabel)"                       # (NOVO)
+Write-Host "Porta do agente : $ZabbixAgentPort"
+Write-Host "Plugins         : $(Get-PluginSelectionLabel)"
 Write-Host "Configuracao    : $ConfigPath"
-Write-Host "Firewall        : TCP $ZabbixAgentPort limitado ao IP informado"     # (NOVO) porta dinamica
+$FwSummaryLabel = if ($ZabbixAgentPort -eq "10050") {
+    "TCP 10050 e 10051 (Entrada e Saida) restrito a $ZabbixServer"
+} else {
+    "TCP $ZabbixAgentPort, 10050 e 10051 (Entrada e Saida) restrito a $ZabbixServer"
+}
+Write-Host "Firewall        : $FwSummaryLabel"
 Write-Host "Log MSI         : $MsiLog"
 if ($LoadableSelected.Count -gt 0) {
-    Write-Host "Log plugins     : $PluginsMsiLog"                                # (NOVO)
+    Write-Host "Log plugins     : $PluginsMsiLog"
+}
+if ($SelectedPlugins -contains "mssql") {
+    Write-Host "----------------------------------------------"
+    Write-Host "Config MSSQL    : $MssqlConfPath"
+    Write-Host "Instancia SQL   : $SqlAddress"
+    Write-Host "Porta SQL       : $SqlPort"
+    Write-Host "Usuario SQL     : zbx_monitor (fixo)"
+    Write-Host "Banco SQL       : $SqlDatabase"
+    Write-Host "Criptografia    : $SqlEncrypt"
+    Write-Host "TrustCert       : $SqlTrustServerCertificate"
+    Write-Host "Timeout SQL     : ${SqlTimeout}s"
 }
 
 if ($FinalService.Status -eq "Running") {
@@ -611,8 +917,14 @@ if ($FinalService.Status -eq "Running") {
     Write-Host "`nSTATUS FINAL: FALHA AO INICIAR O AGENTE" -ForegroundColor Red
 }
 
-if ($SelectedPlugins.Count -gt 0) {
-    Write-Host "`nPlugins: preencha as sessoes (URI/usuario/senha) nos arquivos de $AgentConfD e reinicie o servico." -ForegroundColor Yellow   # (NOVO)
+if ($SelectedPlugins -contains "mssql") {
+    Write-Host "`nPlugin MSSQL configurado automaticamente em $MssqlConfPath." -ForegroundColor Green
+    Write-Host "No frontend Zabbix, associe o template oficial 'Microsoft SQL by Zabbix agent 2'." -ForegroundColor DarkGray
+}
+
+$OtherStubs = @($SelectedPlugins | Where-Object { $_ -ne "mssql" })
+if ($OtherStubs.Count -gt 0) {
+    Write-Host "`nDemais plugins ($($OtherStubs -join ', ')): preencha as credenciais/sessoes nos stubs de $AgentConfD e reinicie o servico." -ForegroundColor Yellow
 }
 
 Write-Host "`nA instalacao foi concluida. Cadastre o host '$ZabbixHostname' no frontend do Zabbix se ainda nao existir."
