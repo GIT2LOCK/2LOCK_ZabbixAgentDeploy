@@ -20,7 +20,7 @@ if (-not $IsAdmin) {
     return
 }
 
-$BaseDir  = Join-Path $env:ProgramData "2LOCK\ZabbixAgent2"
+$BaseDir  = Join-Path ([string]$env:ProgramData) "2LOCK\ZabbixAgent2"
 $MsiPath  = Join-Path $BaseDir "zabbix_agent2.msi"
 $MsiLog   = Join-Path $BaseDir "install-msi.log"
 $MsiUrl   = "https://cdn.zabbix.com/zabbix/binaries/stable/7.0/latest/zabbix_agent2-7.0-latest-windows-amd64-openssl.msi"
@@ -452,7 +452,7 @@ if (-not $ExeMatch.Success) {
     Stop-Installer "Nao foi possivel determinar a pasta de instalacao do agente."
 }
 $AgentExe   = $ExeMatch.Groups[1].Value
-$InstallDir = Split-Path $AgentExe
+$InstallDir = [string](Split-Path $AgentExe)
 
 if ($Service.PathName -match '(?i)(?:--config|-c)\s+"([^"]+\.conf)"') {
     $ConfigPath = $Matches[1]
@@ -553,9 +553,9 @@ if ($SelectedPlugins -contains "mssql") {
     }
 
     $MssqlBinaryCandidates = @(
-        Join-Path $InstallDir "zabbix-agent2-plugin-mssql.exe",
-        Join-Path $InstallDir "plugins\zabbix-agent2-plugin-mssql.exe",
-        Join-Path $InstallDir "zabbix_agent2.d\plugins.d\zabbix-agent2-plugin-mssql.exe"
+        (Join-Path $InstallDir "zabbix-agent2-plugin-mssql.exe"),
+        (Join-Path $InstallDir "plugins\zabbix-agent2-plugin-mssql.exe"),
+        (Join-Path $InstallDir "zabbix_agent2.d\plugins.d\zabbix-agent2-plugin-mssql.exe")
     )
     foreach ($cand in $MssqlBinaryCandidates) {
         if (Test-Path $cand) {
@@ -586,13 +586,13 @@ if ($SelectedPlugins.Count -gt 0) {
 
     # 1. Configuracao completa do plugin MSSQL
     if ($SelectedPlugins -contains "mssql") {
-        # Localiza o arquivo correto do plugin: plugins.d\mssql.conf (padrao Zabbix) ou zabbix_agent2.d\mssql.conf
-        if (Test-Path (Join-Path $PluginsConfD "mssql.conf")) {
-            $MssqlConfPath = Join-Path $PluginsConfD "mssql.conf"
-        } elseif (Test-Path (Join-Path $AgentConfD "mssql.conf")) {
+        # Localiza o arquivo correto do plugin: o MSI instala em zabbix_agent2.d\mssql.conf (CONFIGFOLDER)
+        if (Test-Path (Join-Path $AgentConfD "mssql.conf")) {
+            $MssqlConfPath = Join-Path $AgentConfD "mssql.conf"
+        } elseif (Test-Path (Join-Path $PluginsConfD "mssql.conf")) {
             $MssqlConfPath = Join-Path $AgentConfD "mssql.conf"
         } else {
-            $MssqlConfPath = Join-Path $PluginsConfD "mssql.conf"
+            $MssqlConfPath = Join-Path $AgentConfD "mssql.conf"
         }
 
         Write-Host "Configurando parametros do MSSQL em '$MssqlConfPath'..." -ForegroundColor Cyan
@@ -642,6 +642,9 @@ if ($SelectedPlugins.Count -gt 0) {
 
             # Remove stub legado se existir para evitar confusao ou instrucoes obsoletas
             $LegacyStub = Join-Path $AgentConfD "2lock_mssql.conf"
+            if (Test-Path (Join-Path $PluginsConfD "mssql.conf")) {
+                Remove-Item -Path (Join-Path $PluginsConfD "mssql.conf") -Force -ErrorAction SilentlyContinue
+            }
             if (Test-Path $LegacyStub) {
                 Remove-Item -Path $LegacyStub -Force -ErrorAction SilentlyContinue
             }
