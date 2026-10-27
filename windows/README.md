@@ -250,6 +250,21 @@ Select-String -Path "C:\Program Files\Zabbix Agent 2\zabbix_agent2.conf" -Patter
 
 ---
 
+## Desinstalação completa
+
+Para remover completamente o Zabbix Agent 2, o pacote de plugins (MSSQL, PostgreSQL, etc.), serviços, regras de firewall e diretórios residuais:
+
+```powershell
+irm https://raw.githubusercontent.com/GIT2LOCK/2LOCK_ZabbixAgentDeploy/main/windows/zabbix_agent2_uninstall.ps1 | iex
+```
+
+Ou executando o arquivo localmente:
+```powershell
+.\zabbix_agent2_uninstall.ps1
+```
+
+---
+
 ## Observações importantes
 
 - O script precisa de **PowerShell elevado**.

@@ -30,6 +30,13 @@ function Stop-Installer {
     Write-Host "`nERRO: $Message" -ForegroundColor Red
     if (Test-Path $MsiLog) {
         Write-Host "Log MSI: $MsiLog" -ForegroundColor Yellow
+        $ErrLines = Get-Content $MsiLog -ErrorAction SilentlyContinue |
+            Where-Object { $_ -match '(?i)(Return value 3|error \d+:|fatal error|Installation failed)' } |
+            Select-Object -Last 5
+        if ($ErrLines) {
+            Write-Host "Linhas de erro identificadas no log MSI:" -ForegroundColor DarkYellow
+            $ErrLines | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkYellow }
+        }
     }
     throw "Instalacao abortada."
 }
@@ -417,7 +424,20 @@ try {
 try {
     Write-Host "[2/6] Instalando o agente base..." -ForegroundColor Cyan
 
+    # Verifica se o produto ja esta registrado no Windows Installer
+    $ExistingApp = Get-ItemProperty -Path @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    ) -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '(?i)Zabbix Agent 2' } | Select-Object -First 1
+
+    $ReinstallParams = ""
+    if ($ExistingApp) {
+        Write-Host "Instalacao anterior do Zabbix Agent 2 detectada ($($ExistingApp.DisplayVersion)). Forcando reinstalacao/reparo..." -ForegroundColor Cyan
+        $ReinstallParams = "REINSTALL=ALL REINSTALLMODE=amus "
+    }
+
     $InstallArgs = "/i `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
+                   $ReinstallParams +
                    "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
                    "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
                    "STARTUPTYPE=automatic SKIP=fw ENABLEPATH=1"
@@ -439,19 +459,94 @@ try {
 # 6b. Localizar o servico e a pasta de instalacao do agente
 Write-Host "[3/6] Localizando o servico e caminhos do agente..." -ForegroundColor Cyan
 
-$Service = Get-CimInstance Win32_Service |
-    Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
-    Select-Object -First 1
+$Service = $null
+# Aguarda o servico estar disponivel no SCM / WMI (retry loop de ate 10s)
+for ($retry = 0; $retry -lt 10; $retry++) {
+    $Service = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+        Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
+        Select-Object -First 1
+
+    if (-not $Service) {
+        $SvcByName = Get-Service -Name "Zabbix Agent 2", "*zabbix*agent*2*" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($SvcByName) {
+            $Service = Get-CimInstance Win32_Service -Filter "Name = '$($SvcByName.Name)'" -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($Service) { break }
+    Start-Sleep -Seconds 1
+}
+
+# Auto-recuperacao: se o binario existe no disco mas o servico nao foi registrado
+if (-not $Service) {
+    $CandidateExes = @(
+        "C:\Program Files\Zabbix Agent 2\zabbix_agent2.exe",
+        "C:\Program Files (x86)\Zabbix Agent 2\zabbix_agent2.exe"
+    )
+    $FoundExe = $null
+    foreach ($cExe in $CandidateExes) {
+        if (Test-Path $cExe) { $FoundExe = $cExe; break }
+    }
+
+    if ($FoundExe) {
+        Write-Host "Binario do agente localizado em '$FoundExe', mas o servico Windows nao estava registrado." -ForegroundColor Yellow
+        Write-Host "Registrando o servico do Zabbix Agent 2 nativamente..." -ForegroundColor Cyan
+        $TempInstallDir = [string](Split-Path $FoundExe)
+        $TempConfPath   = Join-Path $TempInstallDir "zabbix_agent2.conf"
+        if (-not (Test-Path $TempConfPath)) {
+            $BasicConf = "Server=$ZabbixServer`nServerActive=$ZabbixServer`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
+            [System.IO.File]::WriteAllText($TempConfPath, $BasicConf, (New-Object System.Text.UTF8Encoding($false)))
+        }
+
+        & $FoundExe --config "$TempConfPath" --install | Out-Null
+        Start-Sleep -Seconds 2
+
+        $Service = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+            Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
+            Select-Object -First 1
+        if (-not $Service) {
+            $SvcByName = Get-Service -Name "Zabbix Agent 2", "*zabbix*agent*2*" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($SvcByName) {
+                $Service = Get-CimInstance Win32_Service -Filter "Name = '$($SvcByName.Name)'" -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+# Se ainda assim nao encontrou e nao tinha tentado reinstalar, tenta reparo forcado do MSI
+if (-not $Service -and -not $ExistingApp) {
+    Write-Host "Servico nao encontrado. Tentando reparo forcado do pacote MSI..." -ForegroundColor Yellow
+    $RepairArgs = "/fa `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
+                  "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
+                  "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
+                  "STARTUPTYPE=automatic SKIP=fw ENABLEPATH=1"
+    $RepairProc = Start-Process -FilePath "msiexec.exe" -ArgumentList $RepairArgs -Wait -PassThru
+    Start-Sleep -Seconds 2
+
+    $Service = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+        Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
+        Select-Object -First 1
+}
 
 if (-not $Service) {
     Stop-Installer "O servico do Zabbix Agent 2 nao foi encontrado apos a instalacao."
 }
 
-$ExeMatch = [regex]::Match($Service.PathName, '(?i)"?([^"]*zabbix_agent2\.exe)"?')
-if (-not $ExeMatch.Success) {
-    Stop-Installer "Nao foi possivel determinar a pasta de instalacao do agente."
+$AgentExe = $null
+if ($Service.PathName) {
+    $ExeMatch = [regex]::Match($Service.PathName, '(?i)"?([^"]*zabbix_agent2\.exe)"?')
+    if ($ExeMatch.Success) {
+        $AgentExe = $ExeMatch.Groups[1].Value
+    }
 }
-$AgentExe   = $ExeMatch.Groups[1].Value
+if (-not $AgentExe) {
+    $DefaultExe = "C:\Program Files\Zabbix Agent 2\zabbix_agent2.exe"
+    if (Test-Path $DefaultExe) {
+        $AgentExe = $DefaultExe
+    } else {
+        Stop-Installer "Nao foi possivel determinar a pasta de instalacao do agente."
+    }
+}
 $InstallDir = [string](Split-Path $AgentExe)
 
 if ($Service.PathName -match '(?i)(?:--config|-c)\s+"([^"]+\.conf)"') {
@@ -463,7 +558,14 @@ if ($Service.PathName -match '(?i)(?:--config|-c)\s+"([^"]+\.conf)"') {
 }
 
 if (-not $ConfigPath -or -not (Test-Path $ConfigPath)) {
-    Stop-Installer "Nao foi possivel localizar o arquivo de configuracao: $ConfigPath"
+    $DefaultConfPath = Join-Path $InstallDir "zabbix_agent2.conf"
+    if (Test-Path $DefaultConfPath) {
+        $ConfigPath = $DefaultConfPath
+    } else {
+        $BasicConf = "Server=$ZabbixServer`nServerActive=$ZabbixServer`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
+        [System.IO.File]::WriteAllText($DefaultConfPath, $BasicConf, (New-Object System.Text.UTF8Encoding($false)))
+        $ConfigPath = $DefaultConfPath
+    }
 }
 Write-Host "Agente: $AgentExe" -ForegroundColor DarkGray
 Write-Host "Config: $ConfigPath" -ForegroundColor DarkGray
