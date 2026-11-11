@@ -1,5 +1,3 @@
-﻿#requires -Version 5.1
-
 # ============================================================
 # 2LOCK - Instalador automatico do Zabbix Agent 2
 # Windows Server 64 bits | Zabbix 7.0 LTS
@@ -8,6 +6,11 @@
 # ============================================================
 
 $ErrorActionPreference = "Stop"
+
+if ($PSVersionTable.PSVersion -lt [Version]"5.1") {
+    Write-Host "ERRO: este script requer PowerShell 5.1 ou superior." -ForegroundColor Red
+    return
+}
 
 # --- Verificacao de admin (sem fechar o console) ---
 $IsAdmin = ([Security.Principal.WindowsPrincipal] `
