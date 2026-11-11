@@ -56,46 +56,47 @@ Este instalador é **somente interativo**, tanto na execução em uma linha quan
 
 ---
 
-### Modo "Adicionar servidor Zabbix" (agente já instalado)
+### Quando o Zabbix Agent 2 já está instalado
 
-Se o Zabbix Agent 2 já estiver instalado no servidor (detectado pelo serviço Windows apontando para `zabbix_agent2.exe` e seu `.conf` ativo), o script entra automaticamente no modo de adição de servidor:
+Se o Zabbix Agent 2 já estiver instalado no servidor (detectado pelo serviço Windows apontando para `zabbix_agent2.exe` e seu `.conf` ativo), o script exibe a configuração atual (`Hostname`, `ListenPort`, `Server`, `ServerActive`) e pergunta o que você deseja fazer:
 
-1. **Pula o download e a reinstalação do MSI base.**
-2. **Exibe a configuração atual** (`Hostname`, `ListenPort`, `Server`, `ServerActive`) e preserva `Hostname`, `ListenPort`, `Timeout` e demais parâmetros intactos.
-3. **Solicita o IP IPv4 do novo servidor/proxy Zabbix** e testa conectividade TCP `10051`.
-4. **Pergunta se deseja instalar/configurar plugins opcionais** (`[s/N]`).
-5. **Acrescenta o novo IP em `Server` e `ServerActive`** separado por vírgula (sem duplicar caso já exista), gerando backup do `.conf`.
-6. **Cria regras de firewall exclusivas para o novo IP** sem remover nem alterar regras de servidores anteriores.
-7. **Reinicia o serviço** e valida `agent.ping`.
+- **`[1]` Apenas adicionar um novo servidor Zabbix (padrão):**
+  1. **Pula o download e a reinstalação do MSI base**, preservando `Hostname`, `ListenPort`, `Timeout` e demais parâmetros intactos.
+  2. **Solicita o IP IPv4 e a porta do novo servidor/proxy Zabbix** (`Enter = 10051`) e testa a conectividade TCP nessa porta.
+  3. **Pergunta se deseja instalar/configurar plugins opcionais** (`[s/N]`).
+  4. **Acrescenta o novo IP em `Server` e o endereço (`IP` ou `IP:PORTA` se diferente de `10051`) em `ServerActive`** separado por vírgula (sem duplicar caso já exista), gerando backup do `.conf`.
+  5. **Cria regras de firewall exclusivas para o novo IP** sem remover nem alterar regras de servidores anteriores.
+  6. **Reinicia o serviço** e valida `agent.ping`.
+- **`[2]` Reinstalar o Zabbix Agent 2 do zero:** executa o fluxo completo de instalação/reparo via MSI e sobrescreve a configuração.
 
-> **Atenção:** o `Hostname` no `zabbix_agent2.conf` é único. Cadastre o host no frontend do novo Zabbix exatamente com o mesmo `Hostname` exibido pelo script.
+> **Atenção:** no modo de adição de servidor, o `Hostname` no `zabbix_agent2.conf` é único. Cadastre o host no frontend do novo Zabbix exatamente com o mesmo `Hostname` exibido pelo script.
 
 ---
 
 ## Perguntas do instalador
 
-As perguntas aparecem sempre nesta ordem:
+As perguntas aparecem sempre nesta ordem (instalação nova ou reinstalação):
 
 | # | Pergunta | O que informar | Padrão | Validação |
 |---|----------|----------------|--------|-----------|
 | 1 | `Li e aceito os termos acima [s/N]` | `s` para aceitar | N (cancela) | Qualquer coisa diferente de `s` cancela a instalação |
 | 2 | `Nome exato do host cadastrado no Zabbix` | Nome do host, idêntico ao do frontend | — | Letras, números, ponto, hífen e underscore; sem espaços |
 | 3 | `IP IPv4 do servidor ou proxy Zabbix` | IP do Zabbix Server ou Proxy | — | IPv4 válido |
-| 4 | `Porta do agente [Enter = 10050]` | Porta de escuta do agente | `10050` | Inteiro entre 1024 e 65535 |
-| 5 | `Opcoes (ex: 5 ou 0 para nenhum)` | Plugins opcionais | Nenhum | Números 0–6 ou nomes |
-| 6 | `Deseja continuar mesmo assim? (s/N)` | Só aparece se o teste da porta 10051 falhar | N (cancela) | `s` continua |
+| 4 | `Porta utilizada no servidor Zabbix [Enter = 10051]` | Porta de destino no Zabbix Server/Proxy | `10051` | Inteiro entre 1 e 65535 |
+| 5 | `Porta do agente [Enter = 10050]` | Porta de escuta do agente | `10050` | Inteiro entre 1024 e 65535 |
+| 6 | `Opcoes (ex: 5 ou 0 para nenhum)` | Plugins opcionais | Nenhum | Números 0–6 ou nomes |
+| 7 | `Deseja continuar mesmo assim? (s/N)` | Só aparece se o teste TCP na porta do servidor falhar | N (cancela) | `s` continua |
 
-Perguntas inválidas ou vazias (2 a 5) são repetidas até a resposta ser aceita.
+Perguntas inválidas ou vazias (2 a 6) são repetidas até a resposta ser aceita.
 
 ### Termo de uso
 
 O termo aparece antes de qualquer pergunta de configuração. Sem o aceite (`s`), o script mostra **"Instalacao cancelada. Termo de uso nao aceito."** e termina sem alterar nada no servidor.
 
-### Porta do agente
+### Portas (agente e servidor Zabbix)
 
-A porta padrão é `10050`. Se usar outra porta, ela vale para o agente, o `.conf` e a regra de firewall. Lembre-se de cadastrar a **mesma porta na interface do host** no frontend do Zabbix.
-
-> A porta `10051` (Zabbix Server) é apenas testada pelo instalador e não é configurável.
+- **Porta do agente (`ListenPort`):** o padrão é `10050`. Se usar outra porta, ela vale para o agente, o `.conf` e a regra de firewall. Lembre-se de cadastrar a **mesma porta na interface do host** no frontend do Zabbix.
+- **Porta do servidor Zabbix (`ServerActive`):** o padrão é `10051`. Se informar outra porta, ela é usada no formato `IP:PORTA` em `ServerActive`, no teste de conectividade TCP e nas regras de firewall.
 
 ### Plugins opcionais
 

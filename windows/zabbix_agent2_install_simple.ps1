@@ -204,6 +204,26 @@ function Read-ZabbixServerIPv4 {
     return $serverIp
 }
 
+function Read-PortNumber {
+    param(
+        [string]$Prompt,
+        [string]$DefaultPort,
+        [int]$MinPort = 1024,
+        [int]$MaxPort = 65535
+    )
+    do {
+        $rawPort = (Read-Host $Prompt).Trim()
+        $portVal = if ($rawPort) { $rawPort } else { $DefaultPort }
+        $isValid = ($portVal -match '^\d{1,5}$') -and
+                   ([int64]$portVal -ge $MinPort) -and
+                   ([int64]$portVal -le $MaxPort)
+        if (-not $isValid) {
+            Write-Host "Porta invalida. Informe um numero inteiro entre $MinPort e $MaxPort." -ForegroundColor Yellow
+        }
+    } while (-not $isValid)
+    return [string][int]$portVal
+}
+
 # ------------------------------------------------------------
 # PLUGINS OPCIONAIS
 # Built-in  = ja compilado no zabbix_agent2.exe, nenhuma instalacao extra.
@@ -343,13 +363,13 @@ Write-Host ""
 
 # 0b. Deteccao de instalacao existente do Zabbix Agent 2
 $ExistingAgent   = Find-ExistingZabbixAgent2
-$IsAddServerMode = ($null -ne $ExistingAgent)
+$IsAddServerMode = $false
 
 $CurrentServer       = ""
 $CurrentServerActive = ""
 $DisplayHostname     = ""
 
-if ($IsAddServerMode) {
+if ($null -ne $ExistingAgent) {
     $ExistingLines = [System.Collections.Generic.List[string]]::new()
     [System.IO.File]::ReadAllLines($ExistingAgent.ConfigPath) | ForEach-Object { [void]$ExistingLines.Add($_) }
 
@@ -379,7 +399,6 @@ if ($IsAddServerMode) {
     Write-Host "==============================================" -ForegroundColor Cyan
     Write-Host "  ZABBIX AGENT 2 JA INSTALADO DETECTADO" -ForegroundColor Cyan
     Write-Host "==============================================" -ForegroundColor Cyan
-    Write-Host "  Modo          : Adicionar novo servidor Zabbix (sem reinstalar)" -ForegroundColor Green
     Write-Host "  Servico       : $($ExistingAgent.Service.Name) ($($ExistingAgent.Service.State))"
     Write-Host "  Executavel    : $($ExistingAgent.AgentExe)" -ForegroundColor DarkGray
     Write-Host "  Configuracao  : $($ExistingAgent.ConfigPath)" -ForegroundColor DarkGray
@@ -388,9 +407,38 @@ if ($IsAddServerMode) {
     Write-Host "  Server atual  : $(if ($CurrentServer) { $CurrentServer } else { '(nao definido)' })"
     Write-Host "  ServerActive  : $(if ($CurrentServerActive) { $CurrentServerActive } else { '(nao definido)' })"
     Write-Host ""
+    Write-Host "  O que deseja fazer?" -ForegroundColor White
+    Write-Host "  [1] Apenas adicionar um novo servidor Zabbix (preserva agente, Hostname e servidores atuais)"
+    Write-Host "  [2] Reinstalar o Zabbix Agent 2 do zero (sobrescreve a configuracao)"
+    Write-Host ""
 
-    # Solicita apenas o IP do novo servidor Zabbix
-    $ZabbixServer = Read-ZabbixServerIPv4 -Prompt "IP IPv4 do novo servidor ou proxy Zabbix a adicionar"
+    $InstallAction = $null
+    do {
+        $RawAction = (Read-Host "  Escolha [1/2, Enter = 1]").Trim()
+        if ($RawAction -in @("", "1")) {
+            $InstallAction = "add"
+        } elseif ($RawAction -eq "2") {
+            $InstallAction = "reinstall"
+        } else {
+            Write-Host "  Opcao invalida. Digite 1 para adicionar servidor ou 2 para reinstalar do zero." -ForegroundColor Yellow
+        }
+    } while (-not $InstallAction)
+
+    $IsAddServerMode = ($InstallAction -eq "add")
+    Write-Host ""
+    if ($IsAddServerMode) {
+        Write-Host "Modo selecionado: Adicionar novo servidor Zabbix." -ForegroundColor Green
+    } else {
+        Write-Host "Modo selecionado: Reinstalacao completa do zero." -ForegroundColor Yellow
+    }
+    Write-Host ""
+}
+
+if ($IsAddServerMode) {
+    # Solicita o IP e a porta do novo servidor Zabbix
+    $ZabbixServer     = Read-ZabbixServerIPv4 -Prompt "IP IPv4 do novo servidor ou proxy Zabbix a adicionar"
+    Write-Host "Porta padrao do Zabbix Server (checagens ativas): 10051" -ForegroundColor DarkGray
+    $ZabbixServerPort = Read-PortNumber -Prompt "Porta utilizada no servidor Zabbix [Enter = 10051]" -DefaultPort "10051" -MinPort 1 -MaxPort 65535
 
     # Pergunta opcional sobre plugins
     Write-Host ""
@@ -400,7 +448,7 @@ if ($IsAddServerMode) {
         Show-PluginPrompt
     }
 } else {
-    # 1. Nome do host (instalacao nova)
+    # 1. Nome do host (instalacao nova ou reinstalacao do zero)
     do {
         $ZabbixHostname = (Read-Host "Nome exato do host cadastrado no Zabbix").Trim()
 
@@ -416,32 +464,32 @@ if ($IsAddServerMode) {
     } while ([string]::IsNullOrWhiteSpace($ZabbixHostname))
     $DisplayHostname = $ZabbixHostname
 
-    # 2. IP do Zabbix Server
-    $ZabbixServer = Read-ZabbixServerIPv4 -Prompt "IP IPv4 do servidor ou proxy Zabbix"
+    # 2. IP e porta do Zabbix Server
+    $ZabbixServer     = Read-ZabbixServerIPv4 -Prompt "IP IPv4 do servidor ou proxy Zabbix"
+    Write-Host "`nPorta padrao do Zabbix Server (checagens ativas): 10051" -ForegroundColor DarkGray
+    $ZabbixServerPort = Read-PortNumber -Prompt "Porta utilizada no servidor Zabbix [Enter = 10051]" -DefaultPort "10051" -MinPort 1 -MaxPort 65535
 
-    # 2b. Porta do agente (default 10050; a porta 10051 do Server NAO muda)
-    Write-Host "`nPorta padrao do Zabbix: 10050" -ForegroundColor DarkGray
-    do {
-        $InputPort = (Read-Host "Porta do agente [Enter = 10050]").Trim()
-        $ZabbixAgentPort = if ($InputPort) { $InputPort } else { "10050" }
-
-        $PortValid = ($ZabbixAgentPort -match '^\d{1,5}$') -and
-                     ([int64]$ZabbixAgentPort -ge 1024) -and
-                     ([int64]$ZabbixAgentPort -le 65535)
-
-        if (-not $PortValid) {
-            Write-Host "Porta invalida. Informe um numero inteiro entre 1024 e 65535." -ForegroundColor Yellow
-        }
-    } while (-not $PortValid)
-    $ZabbixAgentPort = [string][int]$ZabbixAgentPort   # normaliza (ex: 010050 -> 10050)
+    # 2b. Porta do agente (default 10050)
+    Write-Host "`nPorta padrao do agente Zabbix (checagens passivas): 10050" -ForegroundColor DarkGray
+    $ZabbixAgentPort = Read-PortNumber -Prompt "Porta do agente [Enter = 10050]" -DefaultPort "10050" -MinPort 1024 -MaxPort 65535
 
     # 2c. Selecao de plugins opcionais
     Write-Host ""
     Show-PluginPrompt
 }
 
-# Portas de comunicacao do Zabbix a serem liberadas no firewall (10050 e 10051)
-$FwInboundPorts = @($ZabbixAgentPort, "10050", "10051") | Select-Object -Unique
+$ServerActiveEntry = if ($ZabbixServerPort -eq "10051") {
+    $ZabbixServer
+} else {
+    "${ZabbixServer}:${ZabbixServerPort}"
+}
+
+# Portas de comunicacao do Zabbix a serem liberadas no firewall
+$FwInboundPorts  = @($ZabbixAgentPort, "10050", $ZabbixServerPort) | Select-Object -Unique
+$FwOutboundPorts = @($ZabbixServerPort)
+if ($ZabbixAgentPort -ne "10050" -and $FwOutboundPorts -notcontains $ZabbixAgentPort) {
+    $FwOutboundPorts += $ZabbixAgentPort
+}
 
 # 2d. Configuracao interativa do Microsoft SQL Server (MSSQL)
 $SqlPort                   = "1433"
@@ -545,13 +593,13 @@ if ($IsAddServerMode) {
     Write-Host "  Modo          : Adicionar servidor Zabbix (agente ja instalado)"
     Write-Host "  Host Zabbix   : $DisplayHostname (preservado)"
     Write-Host "  Novo Servidor : $ZabbixServer"
-    Write-Host "  Porta ativa   : TCP 10051"
+    Write-Host "  Porta ativa   : TCP $ZabbixServerPort"
     Write-Host "  Porta passiva : TCP $ZabbixAgentPort (preservada)"
 } else {
-    Write-Host "  Modo          : Instalacao nova"
+    Write-Host "  Modo          : $(if ($null -ne $ExistingAgent) { 'Reinstalacao completa do zero' } else { 'Instalacao nova' })"
     Write-Host "  Host Zabbix   : $ZabbixHostname"
     Write-Host "  Servidor      : $ZabbixServer"
-    Write-Host "  Porta ativa   : TCP 10051"
+    Write-Host "  Porta ativa   : TCP $ZabbixServerPort"
     Write-Host "  Porta passiva : TCP $ZabbixAgentPort"
 }
 Write-Host "  Plugins       : $(Get-PluginSelectionLabel)"
@@ -566,22 +614,22 @@ if ($SelectedPlugins -contains "mssql") {
 }
 Write-Host ""
 
-# 3. Teste de conectividade com o Zabbix Server (TCP 10051, timeout curto)
-Write-Host "Testando conectividade com $ZabbixServer na porta 10051..." -ForegroundColor Cyan
+# 3. Teste de conectividade com o Zabbix Server (porta ativa configurada, timeout curto)
+Write-Host "Testando conectividade com $ZabbixServer na porta $ZabbixServerPort..." -ForegroundColor Cyan
 
 $tcp = New-Object System.Net.Sockets.TcpClient
 try {
-    $iar = $tcp.BeginConnect($ZabbixServer, 10051, $null, $null)
+    $iar = $tcp.BeginConnect($ZabbixServer, [int]$ZabbixServerPort, $null, $null)
     if (-not $iar.AsyncWaitHandle.WaitOne(3000)) {
         throw "Timeout"
     }
     $tcp.EndConnect($iar)
     Write-Host "Conectividade OK." -ForegroundColor Green
 } catch {
-    Write-Host "ATENCAO: nao foi possivel conectar em $ZabbixServer:10051." -ForegroundColor Yellow
+    Write-Host "ATENCAO: nao foi possivel conectar em ${ZabbixServer}:${ZabbixServerPort}." -ForegroundColor Yellow
     $resp = Read-Host "Deseja continuar mesmo assim? (s/N)"
     if ($resp -notmatch '^[sS]$') {
-        Stop-Installer "Operacao cancelada pelo usuario. Verifique o IP do Zabbix Server."
+        Stop-Installer "Operacao cancelada pelo usuario. Verifique o IP e a porta do Zabbix Server."
     }
 } finally {
     $tcp.Close()
@@ -641,7 +689,7 @@ if ($IsAddServerMode) {
 
         $InstallArgs = "/i `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
                        $ReinstallParams +
-                       "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
+                       "SERVER=$ZabbixServer SERVERACTIVE=$ServerActiveEntry " +
                        "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
                        "STARTUPTYPE=automatic SKIP=fw ENABLEPATH=1"
 
@@ -687,7 +735,7 @@ if ($IsAddServerMode) {
             $TempInstallDir = [string](Split-Path $FoundExe)
             $TempConfPath   = Join-Path $TempInstallDir "zabbix_agent2.conf"
             if (-not (Test-Path $TempConfPath)) {
-                $BasicConf = "Server=$ZabbixServer`nServerActive=$ZabbixServer`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
+                $BasicConf = "Server=$ZabbixServer`nServerActive=$ServerActiveEntry`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
                 [System.IO.File]::WriteAllText($TempConfPath, $BasicConf, (New-Object System.Text.UTF8Encoding($false)))
             }
 
@@ -701,7 +749,7 @@ if ($IsAddServerMode) {
     if (-not $Service -and -not $ExistingApp) {
         Write-Host "Servico nao encontrado. Tentando reparo forcado do pacote MSI..." -ForegroundColor Yellow
         $RepairArgs = "/fa `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
-                      "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
+                      "SERVER=$ZabbixServer SERVERACTIVE=$ServerActiveEntry " +
                       "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
                       "STARTUPTYPE=automatic SKIP=fw ENABLEPATH=1"
         $RepairProc = Start-Process -FilePath "msiexec.exe" -ArgumentList $RepairArgs -Wait -PassThru
@@ -727,7 +775,7 @@ if ($IsAddServerMode) {
         if (Test-Path $DefaultConfPath) {
             $ConfigPath = $DefaultConfPath
         } else {
-            $BasicConf = "Server=$ZabbixServer`nServerActive=$ZabbixServer`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
+            $BasicConf = "Server=$ZabbixServer`nServerActive=$ServerActiveEntry`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
             [System.IO.File]::WriteAllText($DefaultConfPath, $BasicConf, (New-Object System.Text.UTF8Encoding($false)))
             $ConfigPath = $DefaultConfPath
         }
@@ -980,7 +1028,7 @@ $ConfStepLabel = if ($IsAddServerMode) {
 Write-Host $ConfStepLabel -ForegroundColor Cyan
 
 $FinalServerValue       = $ZabbixServer
-$FinalServerActiveValue = $ZabbixServer
+$FinalServerActiveValue = $ServerActiveEntry
 
 try {
     $BackupPath = "$ConfigPath.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
@@ -991,7 +1039,7 @@ try {
 
     if ($IsAddServerMode) {
         $AddedServer       = Add-AgentServerValue -ConfigLines $Lines -Name "Server"       -NewServer $ZabbixServer
-        $AddedServerActive = Add-AgentServerValue -ConfigLines $Lines -Name "ServerActive" -NewServer $ZabbixServer
+        $AddedServerActive = Add-AgentServerValue -ConfigLines $Lines -Name "ServerActive" -NewServer $ServerActiveEntry
 
         if ($AddedServer) {
             Write-Host "IP $ZabbixServer adicionado ao parametro Server." -ForegroundColor Green
@@ -999,13 +1047,13 @@ try {
             Write-Host "IP $ZabbixServer ja estava presente no parametro Server." -ForegroundColor DarkGray
         }
         if ($AddedServerActive) {
-            Write-Host "IP $ZabbixServer adicionado ao parametro ServerActive." -ForegroundColor Green
+            Write-Host "Endereco $ServerActiveEntry adicionado ao parametro ServerActive." -ForegroundColor Green
         } else {
-            Write-Host "IP $ZabbixServer ja estava presente no parametro ServerActive." -ForegroundColor DarkGray
+            Write-Host "Endereco $ServerActiveEntry ja estava presente no parametro ServerActive." -ForegroundColor DarkGray
         }
     } else {
         Set-AgentParameter $Lines "Server"       $ZabbixServer
-        Set-AgentParameter $Lines "ServerActive" $ZabbixServer
+        Set-AgentParameter $Lines "ServerActive" $ServerActiveEntry
         Set-AgentParameter $Lines "Hostname"     $ZabbixHostname
         Set-AgentParameter $Lines "ListenPort"   $ZabbixAgentPort
         Set-AgentParameter $Lines "Timeout"      "10"
@@ -1067,11 +1115,11 @@ try {
     Stop-Installer "Falha ao alterar a configuracao: $($_.Exception.Message)"
 }
 
-# 9. Firewall (Liberacao das portas 10050 e 10051)
+# 9. Firewall (Liberacao das portas do agente e do Zabbix Server)
 $FwStepLabel = if ($IsAddServerMode) {
     "[3/4] Adicionando regras de firewall exclusivas para $ZabbixServer..."
 } else {
-    "[5/6] Configurando o firewall (portas 10050 e 10051)..."
+    "[5/6] Configurando o firewall (Entrada: $(($FwInboundPorts) -join ', ') | Saida: $(($FwOutboundPorts) -join ', '))..."
 }
 Write-Host $FwStepLabel -ForegroundColor Cyan
 
@@ -1081,12 +1129,12 @@ try {
         Get-NetFirewallRule -DisplayName "2LOCK - Zabbix Agent 2 - $ZabbixServer - *" -ErrorAction SilentlyContinue |
             Remove-NetFirewallRule
     } else {
-        # Em instalacao nova, limpa eventuais regras residuais da 2LOCK
+        # Em instalacao nova ou reinstalacao do zero, limpa eventuais regras residuais da 2LOCK
         Get-NetFirewallRule -DisplayName "2LOCK - Zabbix Agent 2*" -ErrorAction SilentlyContinue |
             Remove-NetFirewallRule
     }
 
-    # 1. Regras de Entrada (Inbound): 10050 (consultas passivas) e 10051 (comunicacao Zabbix)
+    # 1. Regras de Entrada (Inbound): porta do agente (passivo) e portas de comunicacao Zabbix
     foreach ($port in $FwInboundPorts) {
         $inDesc = if ($port -eq $ZabbixAgentPort -or $port -eq "10050") {
             "Permite consultas passivas do Zabbix Server ($ZabbixServer) ao agente na porta $port."
@@ -1101,23 +1149,22 @@ try {
             -RemoteAddress $ZabbixServer -Profile Any | Out-Null
     }
 
-    # 2. Regras de Saida (Outbound): 10051 (checagens ativas do agente para o Zabbix Server)
-    New-NetFirewallRule `
-        -DisplayName "2LOCK - Zabbix Agent 2 - $ZabbixServer - Saida TCP 10051" `
-        -Description "Permite conexoes ativas e envio de dados do agente para o Zabbix Server ($ZabbixServer) na porta 10051." `
-        -Direction Outbound -Action Allow -Protocol TCP -RemotePort "10051" `
-        -RemoteAddress $ZabbixServer -Profile Any | Out-Null
+    # 2. Regras de Saida (Outbound): porta do Zabbix Server (checagens ativas) e porta customizada do agente se aplicavel
+    foreach ($outPort in $FwOutboundPorts) {
+        $outDesc = if ($outPort -eq $ZabbixServerPort) {
+            "Permite conexoes ativas e envio de dados do agente para o Zabbix Server ($ZabbixServer) na porta $outPort."
+        } else {
+            "Permite conexoes do agente para o servidor na porta $outPort."
+        }
 
-    # Se a porta do agente for customizada, garante tambem saida correspondente
-    if ($ZabbixAgentPort -ne "10050") {
         New-NetFirewallRule `
-            -DisplayName "2LOCK - Zabbix Agent 2 - $ZabbixServer - Saida TCP $ZabbixAgentPort" `
-            -Description "Permite conexoes do agente para o servidor na porta $ZabbixAgentPort." `
-            -Direction Outbound -Action Allow -Protocol TCP -RemotePort $ZabbixAgentPort `
+            -DisplayName "2LOCK - Zabbix Agent 2 - $ZabbixServer - Saida TCP $outPort" `
+            -Description $outDesc `
+            -Direction Outbound -Action Allow -Protocol TCP -RemotePort $outPort `
             -RemoteAddress $ZabbixServer -Profile Any | Out-Null
     }
 
-    Write-Host "Regras de firewall criadas com sucesso (Entrada: $(($FwInboundPorts) -join ', ') | Saida: 10051), restritas a $ZabbixServer." -ForegroundColor Green
+    Write-Host "Regras de firewall criadas com sucesso (Entrada: $(($FwInboundPorts) -join ', ') | Saida: $(($FwOutboundPorts) -join ', ')), restritas a $ZabbixServer." -ForegroundColor Green
 } catch {
     Stop-Installer "Falha ao configurar as regras de firewall: $($_.Exception.Message)"
 }
@@ -1201,20 +1248,24 @@ if ($IsAddServerMode) {
     Write-Host "         RESULTADO DA INSTALACAO"
 }
 Write-Host "=============================================="
-Write-Host "Modo            : $(if ($IsAddServerMode) { 'Adicionar servidor Zabbix' } else { 'Instalacao nova' })"
+$FinalModeLabel = if ($IsAddServerMode) {
+    "Adicionar servidor Zabbix"
+} elseif ($null -ne $ExistingAgent) {
+    "Reinstalacao completa do zero"
+} else {
+    "Instalacao nova"
+}
+Write-Host "Modo            : $FinalModeLabel"
 Write-Host "Servico         : $($FinalService.Status)"
 Write-Host "Nome do servico : $($Service.Name)"
 Write-Host "Host Zabbix     : $DisplayHostname"
 Write-Host "Server (conf)   : $FinalServerValue"
 Write-Host "ServerActive    : $FinalServerActiveValue"
+Write-Host "Porta Zabbix    : $ZabbixServerPort"
 Write-Host "Porta do agente : $ZabbixAgentPort"
 Write-Host "Plugins         : $(Get-PluginSelectionLabel)"
 Write-Host "Configuracao    : $ConfigPath"
-$FwSummaryLabel = if ($ZabbixAgentPort -eq "10050") {
-    "TCP 10050 e 10051 (Entrada e Saida) restrito a $ZabbixServer (regras exclusivas deste IP)"
-} else {
-    "TCP $ZabbixAgentPort, 10050 e 10051 (Entrada e Saida) restrito a $ZabbixServer (regras exclusivas deste IP)"
-}
+$FwSummaryLabel = "Entrada TCP $(($FwInboundPorts) -join ', ') | Saida TCP $(($FwOutboundPorts) -join ', ') restrito a $ZabbixServer (regras exclusivas deste IP)"
 Write-Host "Firewall        : $FwSummaryLabel"
 if (-not $IsAddServerMode) {
     Write-Host "Log MSI         : $MsiLog"
