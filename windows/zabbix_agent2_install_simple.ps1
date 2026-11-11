@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 
 # ============================================================
 # 2LOCK - Instalador automatico do Zabbix Agent 2
@@ -42,8 +42,7 @@ function Stop-Installer {
 }
 
 # ------------------------------------------------------------
-# FUNCAO AUXILIAR: Definicao e atualizacao de parametros (.conf)
-# Evita parametros duplicados, preserva comentarios e substitui existentes
+# FUNCOES AUXILIARES: Parametros (.conf) e deteccao do agente
 # ------------------------------------------------------------
 function Set-AgentParameter {
     param(
@@ -65,6 +64,141 @@ function Set-AgentParameter {
                 "# Duplicata desativada pelo instalador 2LOCK: " + $ConfigLines[$Indexes[$j]]
         }
     }
+}
+
+function Get-AgentParameter {
+    param(
+        [System.Collections.Generic.List[string]]$ConfigLines,
+        [string]$Name
+    )
+    $Pattern = '^\s*' + [regex]::Escape($Name) + '\s*=\s*(.*)$'
+    foreach ($line in $ConfigLines) {
+        if ($line -match $Pattern) {
+            return $Matches[1].Trim()
+        }
+    }
+    return $null
+}
+
+function Add-AgentServerValue {
+    param(
+        [System.Collections.Generic.List[string]]$ConfigLines,
+        [string]$Name,
+        [string]$NewServer
+    )
+    $Current = Get-AgentParameter -ConfigLines $ConfigLines -Name $Name
+    if ([string]::IsNullOrWhiteSpace($Current)) {
+        Set-AgentParameter -ConfigLines $ConfigLines -Name $Name -Value $NewServer
+        return $true
+    }
+
+    $Items = [System.Collections.Generic.List[string]]::new()
+    foreach ($part in ($Current -split ',')) {
+        $trimmed = $part.Trim()
+        if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+            [void]$Items.Add($trimmed)
+        }
+    }
+
+    $AlreadyPresent = $false
+    foreach ($item in $Items) {
+        if ($item -eq $NewServer -or ($Name -eq "ServerActive" -and $item -eq "${NewServer}:10051")) {
+            $AlreadyPresent = $true
+            break
+        }
+    }
+
+    if ($AlreadyPresent) {
+        return $false
+    }
+
+    [void]$Items.Add($NewServer)
+    Set-AgentParameter -ConfigLines $ConfigLines -Name $Name -Value ($Items -join ",")
+    return $true
+}
+
+function Get-ZabbixAgent2Service {
+    $svc = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+        Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
+        Select-Object -First 1
+
+    if (-not $svc) {
+        $svcByName = Get-Service -Name "Zabbix Agent 2", "*zabbix*agent*2*" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($svcByName) {
+            $svc = Get-CimInstance Win32_Service -Filter "Name = '$($svcByName.Name)'" -ErrorAction SilentlyContinue
+        }
+    }
+    return $svc
+}
+
+function Resolve-AgentPathsFromService {
+    param([Parameter(Mandatory)]$Service)
+
+    $exe = $null
+    if ($Service.PathName) {
+        $exeMatch = [regex]::Match($Service.PathName, '(?i)"?([^"]*zabbix_agent2\.exe)"?')
+        if ($exeMatch.Success) {
+            $exe = $exeMatch.Groups[1].Value
+        }
+    }
+    if (-not $exe) {
+        $defaultExe = "C:\Program Files\Zabbix Agent 2\zabbix_agent2.exe"
+        if (Test-Path $defaultExe) { $exe = $defaultExe }
+    }
+    if (-not $exe) { return $null }
+
+    $installDir = [string](Split-Path $exe)
+    $conf = $null
+    if ($Service.PathName -match '(?i)(?:--config|-c)\s+"([^"]+\.conf)"') {
+        $conf = $Matches[1]
+    } elseif ($Service.PathName -match '(?i)(?:--config|-c)\s+(\S+\.conf)') {
+        $conf = $Matches[1]
+    } else {
+        $conf = Join-Path $installDir "zabbix_agent2.conf"
+    }
+
+    return [PSCustomObject]@{
+        Service    = $Service
+        AgentExe   = $exe
+        InstallDir = $installDir
+        ConfigPath = $conf
+    }
+}
+
+function Find-ExistingZabbixAgent2 {
+    $svc = Get-ZabbixAgent2Service
+    if (-not $svc) { return $null }
+
+    $paths = Resolve-AgentPathsFromService -Service $svc
+    if (-not $paths) { return $null }
+    if (-not (Test-Path $paths.AgentExe)) { return $null }
+
+    if (-not $paths.ConfigPath -or -not (Test-Path $paths.ConfigPath)) {
+        $fallbackConf = Join-Path $paths.InstallDir "zabbix_agent2.conf"
+        if (Test-Path $fallbackConf) {
+            $paths.ConfigPath = $fallbackConf
+        } else {
+            return $null
+        }
+    }
+
+    return $paths
+}
+
+function Read-ZabbixServerIPv4 {
+    param([string]$Prompt = "IP IPv4 do servidor ou proxy Zabbix")
+    do {
+        $serverIp = (Read-Host $Prompt).Trim()
+        $parsedIp = $null
+        $validIp = [System.Net.IPAddress]::TryParse($serverIp, [ref]$parsedIp)
+
+        if (-not $validIp -or
+            $parsedIp.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+            Write-Host "IP IPv4 invalido. Exemplo: 172.16.4.113" -ForegroundColor Yellow
+            $serverIp = ""
+        }
+    } while ([string]::IsNullOrWhiteSpace($serverIp))
+    return $serverIp
 }
 
 # ------------------------------------------------------------
@@ -204,57 +338,107 @@ if ($AcceptTerms -notmatch '^[sS]$') {
 }
 Write-Host ""
 
-# 1. Nome do host
-do {
-    $ZabbixHostname = (Read-Host "Nome exato do host cadastrado no Zabbix").Trim()
+# 0b. Deteccao de instalacao existente do Zabbix Agent 2
+$ExistingAgent   = Find-ExistingZabbixAgent2
+$IsAddServerMode = ($null -ne $ExistingAgent)
 
-    if ([string]::IsNullOrWhiteSpace($ZabbixHostname)) {
-        Write-Host "O nome do host nao pode ficar vazio." -ForegroundColor Yellow
-        continue
+$CurrentServer       = ""
+$CurrentServerActive = ""
+$DisplayHostname     = ""
+
+if ($IsAddServerMode) {
+    $ExistingLines = [System.Collections.Generic.List[string]]::new()
+    [System.IO.File]::ReadAllLines($ExistingAgent.ConfigPath) | ForEach-Object { [void]$ExistingLines.Add($_) }
+
+    $RawHostname         = Get-AgentParameter -ConfigLines $ExistingLines -Name "Hostname"
+    $RawHostnameItem     = Get-AgentParameter -ConfigLines $ExistingLines -Name "HostnameItem"
+    $RawListenPort       = Get-AgentParameter -ConfigLines $ExistingLines -Name "ListenPort"
+    $CurrentServer       = Get-AgentParameter -ConfigLines $ExistingLines -Name "Server"
+    $CurrentServerActive = Get-AgentParameter -ConfigLines $ExistingLines -Name "ServerActive"
+
+    if (-not [string]::IsNullOrWhiteSpace($RawHostname)) {
+        $ZabbixHostname  = $RawHostname
+        $DisplayHostname = $RawHostname
+    } elseif (-not [string]::IsNullOrWhiteSpace($RawHostnameItem)) {
+        $ZabbixHostname  = $env:COMPUTERNAME
+        $DisplayHostname = "$env:COMPUTERNAME (via HostnameItem=$RawHostnameItem)"
+    } else {
+        $ZabbixHostname  = $env:COMPUTERNAME
+        $DisplayHostname = "$env:COMPUTERNAME (padrao Windows - Hostname nao definido no .conf)"
     }
 
-    if ($ZabbixHostname -notmatch '^[a-zA-Z0-9_.-]+$') {
-        Write-Host "Nome invalido. Use apenas letras, numeros, ponto, hifen ou underscore (sem espacos)." -ForegroundColor Yellow
-        $ZabbixHostname = ""
+    if ($RawListenPort -match '^\d{1,5}$' -and [int64]$RawListenPort -ge 1024 -and [int64]$RawListenPort -le 65535) {
+        $ZabbixAgentPort = [string][int]$RawListenPort
+    } else {
+        $ZabbixAgentPort = "10050"
     }
-} while ([string]::IsNullOrWhiteSpace($ZabbixHostname))
 
-# 2. IP do Zabbix Server
-do {
-    $ZabbixServer = (Read-Host "IP IPv4 do servidor ou proxy Zabbix").Trim()
-    $ParsedIP = $null
+    Write-Host "==============================================" -ForegroundColor Cyan
+    Write-Host "  ZABBIX AGENT 2 JA INSTALADO DETECTADO" -ForegroundColor Cyan
+    Write-Host "==============================================" -ForegroundColor Cyan
+    Write-Host "  Modo          : Adicionar novo servidor Zabbix (sem reinstalar)" -ForegroundColor Green
+    Write-Host "  Servico       : $($ExistingAgent.Service.Name) ($($ExistingAgent.Service.State))"
+    Write-Host "  Executavel    : $($ExistingAgent.AgentExe)" -ForegroundColor DarkGray
+    Write-Host "  Configuracao  : $($ExistingAgent.ConfigPath)" -ForegroundColor DarkGray
+    Write-Host "  Hostname atual: $DisplayHostname"
+    Write-Host "  Porta atual   : $ZabbixAgentPort"
+    Write-Host "  Server atual  : $(if ($CurrentServer) { $CurrentServer } else { '(nao definido)' })"
+    Write-Host "  ServerActive  : $(if ($CurrentServerActive) { $CurrentServerActive } else { '(nao definido)' })"
+    Write-Host ""
 
-    $ValidIP = [System.Net.IPAddress]::TryParse($ZabbixServer, [ref]$ParsedIP)
+    # Solicita apenas o IP do novo servidor Zabbix
+    $ZabbixServer = Read-ZabbixServerIPv4 -Prompt "IP IPv4 do novo servidor ou proxy Zabbix a adicionar"
 
-    if (-not $ValidIP -or
-        $ParsedIP.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
-        Write-Host "IP IPv4 invalido. Exemplo: 172.16.4.113" -ForegroundColor Yellow
-        $ZabbixServer = ""
+    # Pergunta opcional sobre plugins
+    Write-Host ""
+    $ConfigurePlugins = (Read-Host "Deseja instalar/configurar plugins opcionais neste agente? [s/N]").Trim()
+    if ($ConfigurePlugins -match '^[sS]$') {
+        Write-Host ""
+        Show-PluginPrompt
     }
-} while ([string]::IsNullOrWhiteSpace($ZabbixServer))
+} else {
+    # 1. Nome do host (instalacao nova)
+    do {
+        $ZabbixHostname = (Read-Host "Nome exato do host cadastrado no Zabbix").Trim()
 
-# 2b. Porta do agente (default 10050; a porta 10051 do Server NAO muda)
-Write-Host "`nPorta padrao do Zabbix: 10050" -ForegroundColor DarkGray
-do {
-    $InputPort = (Read-Host "Porta do agente [Enter = 10050]").Trim()
-    $ZabbixAgentPort = if ($InputPort) { $InputPort } else { "10050" }
+        if ([string]::IsNullOrWhiteSpace($ZabbixHostname)) {
+            Write-Host "O nome do host nao pode ficar vazio." -ForegroundColor Yellow
+            continue
+        }
 
-    $PortValid = ($ZabbixAgentPort -match '^\d{1,5}$') -and
-                 ([int64]$ZabbixAgentPort -ge 1024) -and
-                 ([int64]$ZabbixAgentPort -le 65535)
+        if ($ZabbixHostname -notmatch '^[a-zA-Z0-9_.-]+$') {
+            Write-Host "Nome invalido. Use apenas letras, numeros, ponto, hifen ou underscore (sem espacos)." -ForegroundColor Yellow
+            $ZabbixHostname = ""
+        }
+    } while ([string]::IsNullOrWhiteSpace($ZabbixHostname))
+    $DisplayHostname = $ZabbixHostname
 
-    if (-not $PortValid) {
-        Write-Host "Porta invalida. Informe um numero inteiro entre 1024 e 65535." -ForegroundColor Yellow
-    }
-} while (-not $PortValid)
-$ZabbixAgentPort = [string][int]$ZabbixAgentPort   # normaliza (ex: 010050 -> 10050)
+    # 2. IP do Zabbix Server
+    $ZabbixServer = Read-ZabbixServerIPv4 -Prompt "IP IPv4 do servidor ou proxy Zabbix"
+
+    # 2b. Porta do agente (default 10050; a porta 10051 do Server NAO muda)
+    Write-Host "`nPorta padrao do Zabbix: 10050" -ForegroundColor DarkGray
+    do {
+        $InputPort = (Read-Host "Porta do agente [Enter = 10050]").Trim()
+        $ZabbixAgentPort = if ($InputPort) { $InputPort } else { "10050" }
+
+        $PortValid = ($ZabbixAgentPort -match '^\d{1,5}$') -and
+                     ([int64]$ZabbixAgentPort -ge 1024) -and
+                     ([int64]$ZabbixAgentPort -le 65535)
+
+        if (-not $PortValid) {
+            Write-Host "Porta invalida. Informe um numero inteiro entre 1024 e 65535." -ForegroundColor Yellow
+        }
+    } while (-not $PortValid)
+    $ZabbixAgentPort = [string][int]$ZabbixAgentPort   # normaliza (ex: 010050 -> 10050)
+
+    # 2c. Selecao de plugins opcionais
+    Write-Host ""
+    Show-PluginPrompt
+}
 
 # Portas de comunicacao do Zabbix a serem liberadas no firewall (10050 e 10051)
 $FwInboundPorts = @($ZabbixAgentPort, "10050", "10051") | Select-Object -Unique
-
-# 2c. Selecao de plugins opcionais
-Write-Host ""
-Show-PluginPrompt
 
 # 2d. Configuracao interativa do Microsoft SQL Server (MSSQL)
 $SqlPort                   = "1433"
@@ -354,10 +538,19 @@ if ($SelectedPlugins -contains "mssql") {
 }
 
 Write-Host "`nResumo:"
-Write-Host "  Host Zabbix   : $ZabbixHostname"
-Write-Host "  Servidor      : $ZabbixServer"
-Write-Host "  Porta ativa   : TCP 10051"
-Write-Host "  Porta passiva : TCP $ZabbixAgentPort"
+if ($IsAddServerMode) {
+    Write-Host "  Modo          : Adicionar servidor Zabbix (agente ja instalado)"
+    Write-Host "  Host Zabbix   : $DisplayHostname (preservado)"
+    Write-Host "  Novo Servidor : $ZabbixServer"
+    Write-Host "  Porta ativa   : TCP 10051"
+    Write-Host "  Porta passiva : TCP $ZabbixAgentPort (preservada)"
+} else {
+    Write-Host "  Modo          : Instalacao nova"
+    Write-Host "  Host Zabbix   : $ZabbixHostname"
+    Write-Host "  Servidor      : $ZabbixServer"
+    Write-Host "  Porta ativa   : TCP 10051"
+    Write-Host "  Porta passiva : TCP $ZabbixAgentPort"
+}
 Write-Host "  Plugins       : $(Get-PluginSelectionLabel)"
 if ($SelectedPlugins -contains "mssql") {
     Write-Host "  SQL Server    : $SqlAddress"
@@ -385,7 +578,7 @@ try {
     Write-Host "ATENCAO: nao foi possivel conectar em $ZabbixServer:10051." -ForegroundColor Yellow
     $resp = Read-Host "Deseja continuar mesmo assim? (s/N)"
     if ($resp -notmatch '^[sS]$') {
-        Stop-Installer "Instalacao cancelada pelo usuario. Verifique o IP do Zabbix Server."
+        Stop-Installer "Operacao cancelada pelo usuario. Verifique o IP do Zabbix Server."
     }
 } finally {
     $tcp.Close()
@@ -398,177 +591,147 @@ try {
     Stop-Installer "Nao foi possivel criar o diretorio de trabalho: $($_.Exception.Message)"
 }
 
-# 5. Download do MSI do Zabbix Agent 2
-try {
-    Write-Host "[1/6] Baixando o Zabbix Agent 2..." -ForegroundColor Cyan
+if ($IsAddServerMode) {
+    $Service    = $ExistingAgent.Service
+    $AgentExe   = $ExistingAgent.AgentExe
+    $InstallDir = $ExistingAgent.InstallDir
+    $ConfigPath = $ExistingAgent.ConfigPath
+    Write-Host "Pulando download e instalacao do MSI base (Zabbix Agent 2 ja instalado)." -ForegroundColor DarkGray
+} else {
+    # 5. Download do MSI do Zabbix Agent 2
+    try {
+        Write-Host "[1/6] Baixando o Zabbix Agent 2..." -ForegroundColor Cyan
 
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiPath -UseBasicParsing
+        Invoke-WebRequest -Uri $MsiUrl -OutFile $MsiPath -UseBasicParsing
 
-    if (-not (Test-Path $MsiPath) -or (Get-Item $MsiPath).Length -lt 1MB) {
-        Stop-Installer "O instalador baixado esta ausente ou incompleto."
+        if (-not (Test-Path $MsiPath) -or (Get-Item $MsiPath).Length -lt 1MB) {
+            Stop-Installer "O instalador baixado esta ausente ou incompleto."
+        }
+
+        $Signature = Get-AuthenticodeSignature -FilePath $MsiPath
+        if ($Signature.Status -ne "Valid") {
+            Stop-Installer "Assinatura digital do MSI invalida (Status: $($Signature.Status)). Instalacao cancelada."
+        }
+
+        Write-Host "Download e assinatura digital validados." -ForegroundColor Green
+    } catch {
+        Stop-Installer "Falha ao baixar ou validar o MSI: $($_.Exception.Message)"
     }
 
-    $Signature = Get-AuthenticodeSignature -FilePath $MsiPath
-    if ($Signature.Status -ne "Valid") {
-        Stop-Installer "Assinatura digital do MSI invalida (Status: $($Signature.Status)). Instalacao cancelada."
+    # 6. Instalacao silenciosa do agente base
+    try {
+        Write-Host "[2/6] Instalando o agente base..." -ForegroundColor Cyan
+
+        # Verifica se o produto ja esta registrado no Windows Installer
+        $ExistingApp = Get-ItemProperty -Path @(
+            "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        ) -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '(?i)Zabbix Agent 2' } | Select-Object -First 1
+
+        $ReinstallParams = ""
+        if ($ExistingApp) {
+            Write-Host "Instalacao anterior do Zabbix Agent 2 detectada ($($ExistingApp.DisplayVersion)). Forcando reinstalacao/reparo..." -ForegroundColor Cyan
+            $ReinstallParams = "REINSTALL=ALL REINSTALLMODE=amus "
+        }
+
+        $InstallArgs = "/i `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
+                       $ReinstallParams +
+                       "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
+                       "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
+                       "STARTUPTYPE=automatic SKIP=fw ENABLEPATH=1"
+
+        $Process = Start-Process -FilePath "msiexec.exe" `
+            -ArgumentList $InstallArgs -Wait -PassThru
+
+        if ($Process.ExitCode -notin @(0, 3010)) {
+            Stop-Installer "O MSI terminou com codigo $($Process.ExitCode). Consulte o log."
+        }
+
+        if ($Process.ExitCode -eq 3010) {
+            Write-Host "O MSI indicou que pode ser necessario reiniciar o Windows." -ForegroundColor Yellow
+        }
+    } catch {
+        Stop-Installer "Falha durante a instalacao: $($_.Exception.Message)"
     }
 
-    Write-Host "Download e assinatura digital validados." -ForegroundColor Green
-} catch {
-    Stop-Installer "Falha ao baixar ou validar o MSI: $($_.Exception.Message)"
-}
+    # 6b. Localizar o servico e a pasta de instalacao do agente
+    Write-Host "[3/6] Localizando o servico e caminhos do agente..." -ForegroundColor Cyan
 
-# 6. Instalacao silenciosa do agente base
-try {
-    Write-Host "[2/6] Instalando o agente base..." -ForegroundColor Cyan
-
-    # Verifica se o produto ja esta registrado no Windows Installer
-    $ExistingApp = Get-ItemProperty -Path @(
-        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    ) -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '(?i)Zabbix Agent 2' } | Select-Object -First 1
-
-    $ReinstallParams = ""
-    if ($ExistingApp) {
-        Write-Host "Instalacao anterior do Zabbix Agent 2 detectada ($($ExistingApp.DisplayVersion)). Forcando reinstalacao/reparo..." -ForegroundColor Cyan
-        $ReinstallParams = "REINSTALL=ALL REINSTALLMODE=amus "
+    $Service = $null
+    # Aguarda o servico estar disponivel no SCM / WMI (retry loop de ate 10s)
+    for ($retry = 0; $retry -lt 10; $retry++) {
+        $Service = Get-ZabbixAgent2Service
+        if ($Service) { break }
+        Start-Sleep -Seconds 1
     }
 
-    $InstallArgs = "/i `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
-                   $ReinstallParams +
-                   "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
-                   "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
-                   "STARTUPTYPE=automatic SKIP=fw ENABLEPATH=1"
+    # Auto-recuperacao: se o binario existe no disco mas o servico nao foi registrado
+    if (-not $Service) {
+        $CandidateExes = @(
+            "C:\Program Files\Zabbix Agent 2\zabbix_agent2.exe",
+            "C:\Program Files (x86)\Zabbix Agent 2\zabbix_agent2.exe"
+        )
+        $FoundExe = $null
+        foreach ($cExe in $CandidateExes) {
+            if (Test-Path $cExe) { $FoundExe = $cExe; break }
+        }
 
-    $Process = Start-Process -FilePath "msiexec.exe" `
-        -ArgumentList $InstallArgs -Wait -PassThru
+        if ($FoundExe) {
+            Write-Host "Binario do agente localizado em '$FoundExe', mas o servico Windows nao estava registrado." -ForegroundColor Yellow
+            Write-Host "Registrando o servico do Zabbix Agent 2 nativamente..." -ForegroundColor Cyan
+            $TempInstallDir = [string](Split-Path $FoundExe)
+            $TempConfPath   = Join-Path $TempInstallDir "zabbix_agent2.conf"
+            if (-not (Test-Path $TempConfPath)) {
+                $BasicConf = "Server=$ZabbixServer`nServerActive=$ZabbixServer`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
+                [System.IO.File]::WriteAllText($TempConfPath, $BasicConf, (New-Object System.Text.UTF8Encoding($false)))
+            }
 
-    if ($Process.ExitCode -notin @(0, 3010)) {
-        Stop-Installer "O MSI terminou com codigo $($Process.ExitCode). Consulte o log."
+            & $FoundExe --config "$TempConfPath" --install | Out-Null
+            Start-Sleep -Seconds 2
+            $Service = Get-ZabbixAgent2Service
+        }
     }
 
-    if ($Process.ExitCode -eq 3010) {
-        Write-Host "O MSI indicou que pode ser necessario reiniciar o Windows." -ForegroundColor Yellow
+    # Se ainda assim nao encontrou e nao tinha tentado reinstalar, tenta reparo forcado do MSI
+    if (-not $Service -and -not $ExistingApp) {
+        Write-Host "Servico nao encontrado. Tentando reparo forcado do pacote MSI..." -ForegroundColor Yellow
+        $RepairArgs = "/fa `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
+                      "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
+                      "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
+                      "STARTUPTYPE=automatic SKIP=fw ENABLEPATH=1"
+        $RepairProc = Start-Process -FilePath "msiexec.exe" -ArgumentList $RepairArgs -Wait -PassThru
+        Start-Sleep -Seconds 2
+        $Service = Get-ZabbixAgent2Service
     }
-} catch {
-    Stop-Installer "Falha durante a instalacao: $($_.Exception.Message)"
-}
-
-# 6b. Localizar o servico e a pasta de instalacao do agente
-Write-Host "[3/6] Localizando o servico e caminhos do agente..." -ForegroundColor Cyan
-
-$Service = $null
-# Aguarda o servico estar disponivel no SCM / WMI (retry loop de ate 10s)
-for ($retry = 0; $retry -lt 10; $retry++) {
-    $Service = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
-        Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
-        Select-Object -First 1
 
     if (-not $Service) {
-        $SvcByName = Get-Service -Name "Zabbix Agent 2", "*zabbix*agent*2*" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($SvcByName) {
-            $Service = Get-CimInstance Win32_Service -Filter "Name = '$($SvcByName.Name)'" -ErrorAction SilentlyContinue
-        }
+        Stop-Installer "O servico do Zabbix Agent 2 nao foi encontrado apos a instalacao."
     }
 
-    if ($Service) { break }
-    Start-Sleep -Seconds 1
-}
-
-# Auto-recuperacao: se o binario existe no disco mas o servico nao foi registrado
-if (-not $Service) {
-    $CandidateExes = @(
-        "C:\Program Files\Zabbix Agent 2\zabbix_agent2.exe",
-        "C:\Program Files (x86)\Zabbix Agent 2\zabbix_agent2.exe"
-    )
-    $FoundExe = $null
-    foreach ($cExe in $CandidateExes) {
-        if (Test-Path $cExe) { $FoundExe = $cExe; break }
-    }
-
-    if ($FoundExe) {
-        Write-Host "Binario do agente localizado em '$FoundExe', mas o servico Windows nao estava registrado." -ForegroundColor Yellow
-        Write-Host "Registrando o servico do Zabbix Agent 2 nativamente..." -ForegroundColor Cyan
-        $TempInstallDir = [string](Split-Path $FoundExe)
-        $TempConfPath   = Join-Path $TempInstallDir "zabbix_agent2.conf"
-        if (-not (Test-Path $TempConfPath)) {
-            $BasicConf = "Server=$ZabbixServer`nServerActive=$ZabbixServer`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
-            [System.IO.File]::WriteAllText($TempConfPath, $BasicConf, (New-Object System.Text.UTF8Encoding($false)))
-        }
-
-        & $FoundExe --config "$TempConfPath" --install | Out-Null
-        Start-Sleep -Seconds 2
-
-        $Service = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
-            Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
-            Select-Object -First 1
-        if (-not $Service) {
-            $SvcByName = Get-Service -Name "Zabbix Agent 2", "*zabbix*agent*2*" -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($SvcByName) {
-                $Service = Get-CimInstance Win32_Service -Filter "Name = '$($SvcByName.Name)'" -ErrorAction SilentlyContinue
-            }
-        }
-    }
-}
-
-# Se ainda assim nao encontrou e nao tinha tentado reinstalar, tenta reparo forcado do MSI
-if (-not $Service -and -not $ExistingApp) {
-    Write-Host "Servico nao encontrado. Tentando reparo forcado do pacote MSI..." -ForegroundColor Yellow
-    $RepairArgs = "/fa `"$MsiPath`" /qn /norestart /l*v `"$MsiLog`" " +
-                  "SERVER=$ZabbixServer SERVERACTIVE=$ZabbixServer " +
-                  "HOSTNAME=`"$ZabbixHostname`" LISTENPORT=$ZabbixAgentPort " +
-                  "STARTUPTYPE=automatic SKIP=fw ENABLEPATH=1"
-    $RepairProc = Start-Process -FilePath "msiexec.exe" -ArgumentList $RepairArgs -Wait -PassThru
-    Start-Sleep -Seconds 2
-
-    $Service = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
-        Where-Object { $_.PathName -match '(?i)zabbix_agent2\.exe' } |
-        Select-Object -First 1
-}
-
-if (-not $Service) {
-    Stop-Installer "O servico do Zabbix Agent 2 nao foi encontrado apos a instalacao."
-}
-
-$AgentExe = $null
-if ($Service.PathName) {
-    $ExeMatch = [regex]::Match($Service.PathName, '(?i)"?([^"]*zabbix_agent2\.exe)"?')
-    if ($ExeMatch.Success) {
-        $AgentExe = $ExeMatch.Groups[1].Value
-    }
-}
-if (-not $AgentExe) {
-    $DefaultExe = "C:\Program Files\Zabbix Agent 2\zabbix_agent2.exe"
-    if (Test-Path $DefaultExe) {
-        $AgentExe = $DefaultExe
-    } else {
+    $ResolvedPaths = Resolve-AgentPathsFromService -Service $Service
+    if (-not $ResolvedPaths) {
         Stop-Installer "Nao foi possivel determinar a pasta de instalacao do agente."
     }
-}
-$InstallDir = [string](Split-Path $AgentExe)
 
-if ($Service.PathName -match '(?i)(?:--config|-c)\s+"([^"]+\.conf)"') {
-    $ConfigPath = $Matches[1]
-} elseif ($Service.PathName -match '(?i)(?:--config|-c)\s+(\S+\.conf)') {
-    $ConfigPath = $Matches[1]
-} else {
-    $ConfigPath = Join-Path $InstallDir "zabbix_agent2.conf"
-}
+    $AgentExe   = $ResolvedPaths.AgentExe
+    $InstallDir = $ResolvedPaths.InstallDir
+    $ConfigPath = $ResolvedPaths.ConfigPath
 
-if (-not $ConfigPath -or -not (Test-Path $ConfigPath)) {
-    $DefaultConfPath = Join-Path $InstallDir "zabbix_agent2.conf"
-    if (Test-Path $DefaultConfPath) {
-        $ConfigPath = $DefaultConfPath
-    } else {
-        $BasicConf = "Server=$ZabbixServer`nServerActive=$ZabbixServer`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
-        [System.IO.File]::WriteAllText($DefaultConfPath, $BasicConf, (New-Object System.Text.UTF8Encoding($false)))
-        $ConfigPath = $DefaultConfPath
+    if (-not $ConfigPath -or -not (Test-Path $ConfigPath)) {
+        $DefaultConfPath = Join-Path $InstallDir "zabbix_agent2.conf"
+        if (Test-Path $DefaultConfPath) {
+            $ConfigPath = $DefaultConfPath
+        } else {
+            $BasicConf = "Server=$ZabbixServer`nServerActive=$ZabbixServer`nHostname=$ZabbixHostname`nListenPort=$ZabbixAgentPort`n"
+            [System.IO.File]::WriteAllText($DefaultConfPath, $BasicConf, (New-Object System.Text.UTF8Encoding($false)))
+            $ConfigPath = $DefaultConfPath
+        }
     }
+    Write-Host "Agente: $AgentExe" -ForegroundColor DarkGray
+    Write-Host "Config: $ConfigPath" -ForegroundColor DarkGray
 }
-Write-Host "Agente: $AgentExe" -ForegroundColor DarkGray
-Write-Host "Config: $ConfigPath" -ForegroundColor DarkGray
 
 # 6c. Pacote de plugins LOADABLE (PostgreSQL / MongoDB / MSSQL)
 $PluginsInstalled = $false
@@ -577,7 +740,8 @@ $LoadableSelected = @($SelectedPlugins | Where-Object { $LoadablePluginKeys -con
 
 if ($LoadableSelected.Count -gt 0) {
     $LoadableLabels = ($LoadableSelected | ForEach-Object { Get-PluginLabel $_ }) -join ", "
-    Write-Host "[3b/6] Instalando pacote de plugins ($LoadableLabels)..." -ForegroundColor Cyan
+    $PluginStepLabel = if ($IsAddServerMode) { "[1/4]" } else { "[3b/6]" }
+    Write-Host "$PluginStepLabel Instalando pacote de plugins ($LoadableLabels)..." -ForegroundColor Cyan
 
     $AgentVersionNum = $null
     try {
@@ -805,7 +969,15 @@ if ($SelectedPlugins.Count -gt 0) {
 }
 
 # 8. Ajustar arquivo principal de configuracao (zabbix_agent2.conf)
-Write-Host "[4/6] Configurando o agente base..." -ForegroundColor Cyan
+$ConfStepLabel = if ($IsAddServerMode) {
+    "[2/4] Atualizando configuracao do agente existente..."
+} else {
+    "[4/6] Configurando o agente base..."
+}
+Write-Host $ConfStepLabel -ForegroundColor Cyan
+
+$FinalServerValue       = $ZabbixServer
+$FinalServerActiveValue = $ZabbixServer
 
 try {
     $BackupPath = "$ConfigPath.bak-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
@@ -814,11 +986,27 @@ try {
     $Lines = [System.Collections.Generic.List[string]]::new()
     [System.IO.File]::ReadAllLines($ConfigPath) | ForEach-Object { [void]$Lines.Add($_) }
 
-    Set-AgentParameter $Lines "Server"       $ZabbixServer
-    Set-AgentParameter $Lines "ServerActive" $ZabbixServer
-    Set-AgentParameter $Lines "Hostname"     $ZabbixHostname
-    Set-AgentParameter $Lines "ListenPort"   $ZabbixAgentPort
-    Set-AgentParameter $Lines "Timeout"      "10"
+    if ($IsAddServerMode) {
+        $AddedServer       = Add-AgentServerValue -ConfigLines $Lines -Name "Server"       -NewServer $ZabbixServer
+        $AddedServerActive = Add-AgentServerValue -ConfigLines $Lines -Name "ServerActive" -NewServer $ZabbixServer
+
+        if ($AddedServer) {
+            Write-Host "IP $ZabbixServer adicionado ao parametro Server." -ForegroundColor Green
+        } else {
+            Write-Host "IP $ZabbixServer ja estava presente no parametro Server." -ForegroundColor DarkGray
+        }
+        if ($AddedServerActive) {
+            Write-Host "IP $ZabbixServer adicionado ao parametro ServerActive." -ForegroundColor Green
+        } else {
+            Write-Host "IP $ZabbixServer ja estava presente no parametro ServerActive." -ForegroundColor DarkGray
+        }
+    } else {
+        Set-AgentParameter $Lines "Server"       $ZabbixServer
+        Set-AgentParameter $Lines "ServerActive" $ZabbixServer
+        Set-AgentParameter $Lines "Hostname"     $ZabbixHostname
+        Set-AgentParameter $Lines "ListenPort"   $ZabbixAgentPort
+        Set-AgentParameter $Lines "Timeout"      "10"
+    }
 
     # Garante inclusao dos diretorios de plugins em zabbix_agent2.conf
     if ($SelectedPlugins.Count -gt 0) {
@@ -868,18 +1056,32 @@ try {
         Stop-Installer "O arquivo de configuracao foi gravado com BOM. Abortando para evitar falha no servico."
     }
 
+    $FinalServerValue       = Get-AgentParameter -ConfigLines $Lines -Name "Server"
+    $FinalServerActiveValue = Get-AgentParameter -ConfigLines $Lines -Name "ServerActive"
+
     Write-Host "Configuracao salva (sem BOM). Backup: $BackupPath" -ForegroundColor Green
 } catch {
     Stop-Installer "Falha ao alterar a configuracao: $($_.Exception.Message)"
 }
 
 # 9. Firewall (Liberacao das portas 10050 e 10051)
-Write-Host "[5/6] Configurando o firewall (portas 10050 e 10051)..." -ForegroundColor Cyan
+$FwStepLabel = if ($IsAddServerMode) {
+    "[3/4] Adicionando regras de firewall exclusivas para $ZabbixServer..."
+} else {
+    "[5/6] Configurando o firewall (portas 10050 e 10051)..."
+}
+Write-Host $FwStepLabel -ForegroundColor Cyan
 
 try {
-    # Remove regras anteriores da 2LOCK para evitar duplicatas ou conflitos
-    Get-NetFirewallRule -DisplayName "2LOCK - Zabbix Agent 2*" -ErrorAction SilentlyContinue |
-        Remove-NetFirewallRule
+    if ($IsAddServerMode) {
+        # Em modo adicao, remove apenas regras anteriores deste mesmo IP (mantem todas as demais intactas)
+        Get-NetFirewallRule -DisplayName "2LOCK - Zabbix Agent 2 - $ZabbixServer - *" -ErrorAction SilentlyContinue |
+            Remove-NetFirewallRule
+    } else {
+        # Em instalacao nova, limpa eventuais regras residuais da 2LOCK
+        Get-NetFirewallRule -DisplayName "2LOCK - Zabbix Agent 2*" -ErrorAction SilentlyContinue |
+            Remove-NetFirewallRule
+    }
 
     # 1. Regras de Entrada (Inbound): 10050 (consultas passivas) e 10051 (comunicacao Zabbix)
     foreach ($port in $FwInboundPorts) {
@@ -890,7 +1092,7 @@ try {
         }
 
         New-NetFirewallRule `
-            -DisplayName "2LOCK - Zabbix Agent 2 - Entrada TCP $port" `
+            -DisplayName "2LOCK - Zabbix Agent 2 - $ZabbixServer - Entrada TCP $port" `
             -Description $inDesc `
             -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port `
             -RemoteAddress $ZabbixServer -Profile Any | Out-Null
@@ -898,7 +1100,7 @@ try {
 
     # 2. Regras de Saida (Outbound): 10051 (checagens ativas do agente para o Zabbix Server)
     New-NetFirewallRule `
-        -DisplayName "2LOCK - Zabbix Agent 2 - Saida TCP 10051" `
+        -DisplayName "2LOCK - Zabbix Agent 2 - $ZabbixServer - Saida TCP 10051" `
         -Description "Permite conexoes ativas e envio de dados do agente para o Zabbix Server ($ZabbixServer) na porta 10051." `
         -Direction Outbound -Action Allow -Protocol TCP -RemotePort "10051" `
         -RemoteAddress $ZabbixServer -Profile Any | Out-Null
@@ -906,7 +1108,7 @@ try {
     # Se a porta do agente for customizada, garante tambem saida correspondente
     if ($ZabbixAgentPort -ne "10050") {
         New-NetFirewallRule `
-            -DisplayName "2LOCK - Zabbix Agent 2 - Saida TCP $ZabbixAgentPort" `
+            -DisplayName "2LOCK - Zabbix Agent 2 - $ZabbixServer - Saida TCP $ZabbixAgentPort" `
             -Description "Permite conexoes do agente para o servidor na porta $ZabbixAgentPort." `
             -Direction Outbound -Action Allow -Protocol TCP -RemotePort $ZabbixAgentPort `
             -RemoteAddress $ZabbixServer -Profile Any | Out-Null
@@ -918,7 +1120,12 @@ try {
 }
 
 # 10. Reiniciar servico e validar funcionamento
-Write-Host "[6/6] Reiniciando e validando o servico..." -ForegroundColor Cyan
+$RestartStepLabel = if ($IsAddServerMode) {
+    "[4/4] Reiniciando e validando o servico..."
+} else {
+    "[6/6] Reiniciando e validando o servico..."
+}
+Write-Host $RestartStepLabel -ForegroundColor Cyan
 
 try {
     $CurrentSvc = Get-Service -Name $Service.Name
@@ -983,24 +1190,32 @@ try {
     Stop-Installer "Falha ao iniciar ou validar o servico: $($_.Exception.Message)"
 }
 
-# 11. Resultado da instalacao
+# 11. Resultado da instalacao / adicao de servidor
 Write-Host "`n=============================================="
-Write-Host "         RESULTADO DA INSTALACAO"
+if ($IsAddServerMode) {
+    Write-Host "    RESULTADO DA ADICAO DE SERVIDOR ZABBIX"
+} else {
+    Write-Host "         RESULTADO DA INSTALACAO"
+}
 Write-Host "=============================================="
+Write-Host "Modo            : $(if ($IsAddServerMode) { 'Adicionar servidor Zabbix' } else { 'Instalacao nova' })"
 Write-Host "Servico         : $($FinalService.Status)"
 Write-Host "Nome do servico : $($Service.Name)"
-Write-Host "Host Zabbix     : $ZabbixHostname"
-Write-Host "Servidor        : $ZabbixServer"
+Write-Host "Host Zabbix     : $DisplayHostname"
+Write-Host "Server (conf)   : $FinalServerValue"
+Write-Host "ServerActive    : $FinalServerActiveValue"
 Write-Host "Porta do agente : $ZabbixAgentPort"
 Write-Host "Plugins         : $(Get-PluginSelectionLabel)"
 Write-Host "Configuracao    : $ConfigPath"
 $FwSummaryLabel = if ($ZabbixAgentPort -eq "10050") {
-    "TCP 10050 e 10051 (Entrada e Saida) restrito a $ZabbixServer"
+    "TCP 10050 e 10051 (Entrada e Saida) restrito a $ZabbixServer (regras exclusivas deste IP)"
 } else {
-    "TCP $ZabbixAgentPort, 10050 e 10051 (Entrada e Saida) restrito a $ZabbixServer"
+    "TCP $ZabbixAgentPort, 10050 e 10051 (Entrada e Saida) restrito a $ZabbixServer (regras exclusivas deste IP)"
 }
 Write-Host "Firewall        : $FwSummaryLabel"
-Write-Host "Log MSI         : $MsiLog"
+if (-not $IsAddServerMode) {
+    Write-Host "Log MSI         : $MsiLog"
+}
 if ($LoadableSelected.Count -gt 0) {
     Write-Host "Log plugins     : $PluginsMsiLog"
 }
@@ -1032,4 +1247,8 @@ if ($OtherStubs.Count -gt 0) {
     Write-Host "`nDemais plugins ($($OtherStubs -join ', ')): preencha as credenciais/sessoes nos stubs de $AgentConfD e reinicie o servico." -ForegroundColor Yellow
 }
 
-Write-Host "`nA instalacao foi concluida. Cadastre o host '$ZabbixHostname' no frontend do Zabbix se ainda nao existir."
+if ($IsAddServerMode) {
+    Write-Host "`nServidor $ZabbixServer adicionado com sucesso. Cadastre o host '$ZabbixHostname' no frontend do novo Zabbix se ainda nao existir."
+} else {
+    Write-Host "`nA instalacao foi concluida. Cadastre o host '$ZabbixHostname' no frontend do Zabbix se ainda nao existir."
+}

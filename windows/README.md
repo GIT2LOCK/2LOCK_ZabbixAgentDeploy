@@ -56,6 +56,22 @@ Este instalador é **somente interativo**, tanto na execução em uma linha quan
 
 ---
 
+### Modo "Adicionar servidor Zabbix" (agente já instalado)
+
+Se o Zabbix Agent 2 já estiver instalado no servidor (detectado pelo serviço Windows apontando para `zabbix_agent2.exe` e seu `.conf` ativo), o script entra automaticamente no modo de adição de servidor:
+
+1. **Pula o download e a reinstalação do MSI base.**
+2. **Exibe a configuração atual** (`Hostname`, `ListenPort`, `Server`, `ServerActive`) e preserva `Hostname`, `ListenPort`, `Timeout` e demais parâmetros intactos.
+3. **Solicita o IP IPv4 do novo servidor/proxy Zabbix** e testa conectividade TCP `10051`.
+4. **Pergunta se deseja instalar/configurar plugins opcionais** (`[s/N]`).
+5. **Acrescenta o novo IP em `Server` e `ServerActive`** separado por vírgula (sem duplicar caso já exista), gerando backup do `.conf`.
+6. **Cria regras de firewall exclusivas para o novo IP** sem remover nem alterar regras de servidores anteriores.
+7. **Reinicia o serviço** e valida `agent.ping`.
+
+> **Atenção:** o `Hostname` no `zabbix_agent2.conf` é único. Cadastre o host no frontend do novo Zabbix exatamente com o mesmo `Hostname` exibido pelo script.
+
+---
+
 ## Perguntas do instalador
 
 As perguntas aparecem sempre nesta ordem:
@@ -154,13 +170,14 @@ O arquivo é gravado sem BOM, como o agente exige.
 
 ### Firewall
 
-A regra é criada **restrita ao IP do Zabbix Server** e inclui a porta no nome:
+A regra é criada **restrita ao IP do Zabbix Server** e inclui o IP e a porta no nome:
 
 ```text
-2LOCK - Zabbix Agent 2 - TCP <PORTA>
+2LOCK - Zabbix Agent 2 - <IP> - Entrada TCP <PORTA>
+2LOCK - Zabbix Agent 2 - <IP> - Saida TCP 10051
 ```
 
-A porta não é aberta para qualquer origem.
+A porta não é aberta para qualquer origem. Ao adicionar um novo servidor Zabbix em um agente já instalado, apenas as regras exclusivas do novo IP são criadas, preservando as regras dos servidores anteriores.
 
 ### Serviço
 
@@ -270,6 +287,5 @@ Ou executando o arquivo localmente:
 - O script precisa de **PowerShell elevado**.
 - O **termo de uso** é obrigatório; sem o aceite, nada é instalado.
 - Instala a **versão mais recente da série 7.0** (alias `latest` da CDN).
-- O instalador simples **não remove versões anteriores** do agente; remova-as antes, se houver.
+- Se o Zabbix Agent 2 já estiver instalado, o script entra no modo **Adicionar servidor Zabbix** (não reinstala o agente), preservando `Hostname`, `ListenPort` e as regras de firewall existentes, acrescentando o novo IP em `Server` e `ServerActive` e criando backup do `.conf`.
 - **TLS/PSK** não é configurado automaticamente.
-- Rodar de novo recria a regra de firewall e refaz o backup do `.conf`.
